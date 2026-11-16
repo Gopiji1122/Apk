@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "AuraAudioPro"
+rootProject.name = "ProMusicPlayer"
 include(":app")

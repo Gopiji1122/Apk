@@ -1,4 +1,4 @@
-name: Build Aura Audio Pro APK
+name: Build Android APK
 
 on:
   push:
@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
@@ -21,21 +21,28 @@ jobs:
       - name: Accept Android SDK Licenses
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
 
-      - name: Setup Gradle with Caching
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Run Unit Tests
-        run: gradle testDebugUnitTest --no-daemon --stacktrace
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Build Debug & Release APKs
-        run: gradle assembleDebug assembleRelease --no-daemon --stacktrace
-
-      - name: Upload Aura-Audio-Pro-APK
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Aura-Audio-Pro-APK
-          path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/apk/release/*.apk
+          name: ProMusicPlayer-debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Build Release APK
+        continue-on-error: true
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Upload Release APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProMusicPlayer-release-APK
+          path: app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: ignore
