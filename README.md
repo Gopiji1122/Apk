@@ -18,8 +18,4 @@ Aura Audio Pro is a complete, 100% offline Android music player built with **Kot
 4. Scroll down to **Artifacts** and download **`Aura-Audio-Pro-APK`**.
 
 ## 3. Production Release Signing & Play Store AAB Instructions
-To sign with your own production keystore (never commit `.jks` files to Git):
-```bash
-keytool -genkey -v -keystore aura-release.jks -keyalg RSA -keysize 2048 -validity 10000 -alias aura
-./gradlew bundleRelease
-```
+uploaded by ggggbsyeud
