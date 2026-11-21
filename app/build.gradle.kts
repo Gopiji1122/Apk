@@ -46,8 +46,18 @@ android {
         freeCompilerArgs += listOf(
             "-opt-in=androidx.media3.common.util.UnstableApi",
             "-opt-in=androidx.compose.material3.ExperimentalMaterial3Api",
-            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi"
+            "-opt-in=androidx.compose.foundation.ExperimentalFoundationApi",
+            "-Xjdk-release=17"
         )
+    }
+}
+
+kotlin {
+    jvmToolchain(17)
+
+    compilerOptions {
+        languageVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_9)
+        apiVersion.set(org.jetbrains.kotlin.gradle.dsl.KotlinVersion.KOTLIN_1_9)
     }
 }
 
