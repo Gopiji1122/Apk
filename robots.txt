@@ -1,7 +1,0 @@
-User-agent: *
-Allow: /
-Disallow: /assets/components/
-Disallow: /header.html
-Disallow: /footer.html
-
-Sitemap: https://subhora.in/sitemap.xml
