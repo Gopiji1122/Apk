@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /templates/
+Disallow: /components/
+
+Sitemap: https://emiformula.com/sitemap.xml
