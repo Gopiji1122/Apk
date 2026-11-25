@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AuraPDFEditor"
+rootProject.name = "AuraPdfEditor"
 include(":app")

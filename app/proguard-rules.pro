@@ -1,2 +1,1 @@
 -keep class com.tom_roush.pdfbox.** { *; }
--dontwarn org.bouncycastle.**
