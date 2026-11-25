@@ -113,8 +113,6 @@ Java_com_offlineai_assistant_engine_LlamaEngine_nativeLoadModel(
     LOGI("Loading GGUF model: %s (ctx=%d, threads=%d)", path, nCtx, nThreads);
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.use_mmap = true;
-    mparams.use_mlock = false;
 
     g_model = llama_model_load_from_file(path, mparams);
     env->ReleaseStringUTFChars(modelPath, path);
