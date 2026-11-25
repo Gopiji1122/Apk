@@ -86,7 +86,7 @@ fun PdfViewerScreen(
     DisposableEffect(renderer) {
         onDispose {
             bitmapCache.evictAll()
-            renderer?.close()
+            runCatching { renderer?.close() }
         }
     }
 
@@ -357,15 +357,19 @@ private fun PdfPageCard(
         if (bitmap == null) {
             bitmap = withContext(Dispatchers.IO) {
                 cache.get(pageIndex) ?: mutex.withLock {
-                    renderer.openPage(pageIndex).use { page ->
-                        val targetW = 1080
-                        val targetH = (targetW.toFloat() / page.width * page.height).toInt()
-                        Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888).also {
-                            it.eraseColor(AndroidColor.WHITE)
-                            page.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            cache.put(pageIndex, it)
+                    runCatching {
+                        renderer.openPage(pageIndex).use { page ->
+                            val targetW = 1080
+                            val targetH = (targetW.toFloat() / page.width.coerceAtLeast(1) * page.height)
+                                .toInt()
+                                .coerceAtLeast(1)
+                            Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888).also {
+                                it.eraseColor(AndroidColor.WHITE)
+                                page.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                cache.put(pageIndex, it)
+                            }
                         }
-                    }
+                    }.getOrNull()
                 }
             }
         }

@@ -40,8 +40,9 @@ object OcrEngine {
         val sb = StringBuilder()
         ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
             PdfRenderer(pfd).use { renderer ->
+                if (renderer.pageCount <= 0) return@withContext ""
                 val indices = if (singlePageIndex != null) {
-                    listOf(singlePageIndex.coerceIn(0, (renderer.pageCount - 1).coerceAtLeast(0)))
+                    listOf(singlePageIndex.coerceIn(0, renderer.pageCount - 1))
                 } else {
                     (0 until renderer.pageCount).toList()
                 }
@@ -49,7 +50,9 @@ object OcrEngine {
                     onProgress(step + 1, indices.size)
                     val bmp = renderer.openPage(pageIdx).use { page ->
                         val targetW = 1440
-                        val targetH = (targetW.toFloat() / page.width * page.height).toInt()
+                        val targetH = (targetW.toFloat() / page.width.coerceAtLeast(1) * page.height)
+                            .toInt()
+                            .coerceAtLeast(1)
                         Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888).also {
                             it.eraseColor(Color.WHITE)
                             page.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)

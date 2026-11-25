@@ -1,5 +1,6 @@
 package com.aurapdf.editor
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -152,9 +153,16 @@ private fun AuraPdfRoot(activity: ComponentActivity, initialUri: Uri?) {
         if (uris.isEmpty()) return@rememberLauncherForActivityResult
         runTask("Converting ${uris.size} images to PDF...") {
             val bitmaps = FileUtils.decodeBitmapsFromUris(context, uris)
+            if (bitmaps.isEmpty()) {
+                toast("Could not decode selected images")
+                return@runTask
+            }
             val out = File(FileUtils.getPdfWorkspaceDir(context), "photos_${System.currentTimeMillis()}.pdf")
-            PdfEngine.imagesToPdf(bitmaps, out)
-            bitmaps.forEach { it.recycle() }
+            try {
+                PdfEngine.imagesToPdf(bitmaps, out)
+            } finally {
+                bitmaps.forEach { it.recycle() }
+            }
             toast("PDF created!")
             currentScreen = AppScreen.Viewer(out)
         }
@@ -163,7 +171,7 @@ private fun AuraPdfRoot(activity: ComponentActivity, initialUri: Uri?) {
     val scannerLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
-        if (result.resultCode == ComponentActivity.RESULT_OK) {
+        if (result.resultCode == Activity.RESULT_OK) {
             val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
             scanResult?.pdf?.uri?.let { pdfUri ->
                 runTask("Saving scanned PDF...") {
@@ -280,17 +288,20 @@ private fun AuraPdfRoot(activity: ComponentActivity, initialUri: Uri?) {
                 signTarget = null
                 runTask("Stamping signature...") {
                     val out = File(FileUtils.getPdfWorkspaceDir(context), "signed_${System.currentTimeMillis()}.pdf")
-                    PdfEngine.stampBitmapOnPage(
-                        inputFile = file,
-                        pageIndex = pageIdx,
-                        bitmap = sigBmp,
-                        normX = 0.58f,
-                        normY = 0.80f,
-                        normW = 0.36f,
-                        normH = 0.14f,
-                        outputFile = out
-                    )
-                    sigBmp.recycle()
+                    try {
+                        PdfEngine.stampBitmapOnPage(
+                            inputFile = file,
+                            pageIndex = pageIdx,
+                            bitmap = sigBmp,
+                            normX = 0.58f,
+                            normY = 0.80f,
+                            normW = 0.36f,
+                            normH = 0.14f,
+                            outputFile = out
+                        )
+                    } finally {
+                        sigBmp.recycle()
+                    }
                     toast("Signature stamped!")
                     currentScreen = AppScreen.Viewer(out)
                 }
@@ -412,17 +423,20 @@ private fun AuraPdfRoot(activity: ComponentActivity, initialUri: Uri?) {
                     onSaveOverlay = { overlayBmp ->
                         runTask("Saving markup onto PDF...") {
                             val out = File(FileUtils.getPdfWorkspaceDir(context), "marked_${System.currentTimeMillis()}.pdf")
-                            PdfEngine.stampBitmapOnPage(
-                                inputFile = screen.file,
-                                pageIndex = screen.pageIndex,
-                                bitmap = overlayBmp,
-                                normX = 0f,
-                                normY = 0f,
-                                normW = 1f,
-                                normH = 1f,
-                                outputFile = out
-                            )
-                            overlayBmp.recycle()
+                            try {
+                                PdfEngine.stampBitmapOnPage(
+                                    inputFile = screen.file,
+                                    pageIndex = screen.pageIndex,
+                                    bitmap = overlayBmp,
+                                    normX = 0f,
+                                    normY = 0f,
+                                    normW = 1f,
+                                    normH = 1f,
+                                    outputFile = out
+                                )
+                            } finally {
+                                overlayBmp.recycle()
+                            }
                             toast("Markup saved!")
                             currentScreen = AppScreen.Viewer(out)
                         }

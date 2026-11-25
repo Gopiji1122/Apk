@@ -10,7 +10,7 @@ android {
 
     defaultConfig {
         applicationId = "com.aurapdf.editor"
-        minSdk = 21
+        minSdk = 24
         targetSdk = 35
         versionCode = 1
         versionName = "1.0.0"
@@ -91,9 +91,9 @@ dependencies {
     // Core Free Offline PDF Engine (Apache PDFBox-Android)
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 
-    // Free On-Device Document Scanner (Auto-Crop Camera, minSdk 21+)
+    // Free On-Device Document Scanner (requires minSdk 23+)
     implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
 
-    // Free On-Device Offline OCR (Text Recognition)
+    // Free On-Device Offline OCR (requires minSdk 24+)
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.2")
 }

@@ -34,10 +34,11 @@ object FileUtils {
 
     suspend fun copyUriToWorkspace(context: Context, uri: Uri, fallbackPrefix: String = "doc"): File =
         withContext(Dispatchers.IO) {
-            val displayName = getFileName(context, uri)
+            val rawName = getFileName(context, uri)
+                ?.replace(Regex("[^a-zA-Z0-9._-]"), "_")
                 ?.takeIf { it.endsWith(".pdf", ignoreCase = true) }
                 ?: "${fallbackPrefix}_${System.currentTimeMillis()}.pdf"
-            val dest = File(getPdfWorkspaceDir(context), displayName)
+            val dest = File(getPdfWorkspaceDir(context), rawName)
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(dest).use { output -> input.copyTo(output) }
             } ?: throw IllegalStateException("Cannot read selected file")
@@ -55,12 +56,24 @@ object FileUtils {
         return name
     }
 
-    suspend fun decodeBitmapsFromUris(context: Context, uris: List<Uri>): List<Bitmap> =
+    /** Decode images with automatic downsampling (max 2048px) to prevent OutOfMemoryError */
+    suspend fun decodeBitmapsFromUris(context: Context, uris: List<Uri>, maxEdge: Int = 2048): List<Bitmap> =
         withContext(Dispatchers.IO) {
             uris.mapNotNull { uri ->
-                context.contentResolver.openInputStream(uri)?.use { stream ->
-                    BitmapFactory.decodeStream(stream)
-                }
+                runCatching {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    context.contentResolver.openInputStream(uri)?.use {
+                        BitmapFactory.decodeStream(it, null, bounds)
+                    }
+                    var sample = 1
+                    while (bounds.outWidth / sample > maxEdge || bounds.outHeight / sample > maxEdge) {
+                        sample *= 2
+                    }
+                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+                    context.contentResolver.openInputStream(uri)?.use {
+                        BitmapFactory.decodeStream(it, null, opts)
+                    }
+                }.getOrNull()
             }
         }
 

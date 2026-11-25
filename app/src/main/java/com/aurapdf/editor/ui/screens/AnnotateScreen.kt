@@ -92,9 +92,12 @@ fun AnnotateScreen(
             runCatching {
                 ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                     PdfRenderer(pfd).use { renderer ->
-                        renderer.openPage(pageIndex.coerceIn(0, (renderer.pageCount - 1).coerceAtLeast(0))).use { page ->
+                        if (renderer.pageCount <= 0) return@runCatching null
+                        renderer.openPage(pageIndex.coerceIn(0, renderer.pageCount - 1)).use { page ->
                             val w = 1080
-                            val h = (w.toFloat() / page.width * page.height).toInt()
+                            val h = (w.toFloat() / page.width.coerceAtLeast(1) * page.height)
+                                .toInt()
+                                .coerceAtLeast(1)
                             Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also {
                                 it.eraseColor(AndroidColor.WHITE)
                                 page.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
@@ -250,7 +253,7 @@ fun AnnotateScreen(
             } else if (bmp == null) {
                 CircularProgressIndicator()
             } else {
-                val aspect = bmp.width.toFloat() / bmp.height.toFloat()
+                val aspect = bmp.width.toFloat() / bmp.height.toFloat().coerceAtLeast(1f)
                 Box(
                     modifier = Modifier
                         .padding(12.dp)

@@ -56,7 +56,7 @@ fun PageOrganizerScreen(
     val renderMutex = remember { Mutex() }
 
     DisposableEffect(renderer) {
-        onDispose { renderer?.close() }
+        onDispose { runCatching { renderer?.close() } }
     }
 
     val pages = remember(pdfFile, renderer) {
@@ -116,14 +116,18 @@ fun PageOrganizerScreen(
                 LaunchedEffect(item.originalIndex) {
                     thumb = withContext(Dispatchers.IO) {
                         renderMutex.withLock {
-                            renderer.openPage(item.originalIndex).use { p ->
-                                val w = 360
-                                val h = (w.toFloat() / p.width * p.height).toInt()
-                                Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also {
-                                    it.eraseColor(AndroidColor.WHITE)
-                                    p.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                            runCatching {
+                                renderer.openPage(item.originalIndex).use { p ->
+                                    val w = 360
+                                    val h = (w.toFloat() / p.width.coerceAtLeast(1) * p.height)
+                                        .toInt()
+                                        .coerceAtLeast(1)
+                                    Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).also {
+                                        it.eraseColor(AndroidColor.WHITE)
+                                        p.render(it, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                    }
                                 }
-                            }
+                            }.getOrNull()
                         }
                     }
                 }

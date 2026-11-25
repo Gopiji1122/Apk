@@ -7,6 +7,7 @@ import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
@@ -39,15 +40,19 @@ object PdfEngine {
         }
     }
 
-    /** Merge multiple PDFs into one output file */
+    /** Merge multiple PDFs into one output file (memory-safe temp-file mode) */
     suspend fun mergePdfs(context: Context, uris: List<Uri>, outputFile: File): File =
         withContext(Dispatchers.IO) {
             val merger = PDFMergerUtility()
             merger.destinationFileName = outputFile.absolutePath
             val streams = uris.mapNotNull { context.contentResolver.openInputStream(it) }
+            if (streams.size < 2) {
+                streams.forEach { runCatching { it.close() } }
+                throw IllegalStateException("Could not open at least 2 PDF files")
+            }
             try {
                 streams.forEach { merger.addSource(it) }
-                merger.mergeDocuments(null)
+                merger.mergeDocuments(MemoryUsageSetting.setupTempFileOnly())
             } finally {
                 streams.forEach { runCatching { it.close() } }
             }
@@ -58,6 +63,7 @@ object PdfEngine {
     suspend fun splitPdf(inputFile: File, startPage: Int, endPage: Int, outputFile: File): File =
         withContext(Dispatchers.IO) {
             PDDocument.load(inputFile).use { source ->
+                if (source.numberOfPages <= 0) throw IllegalStateException("PDF has no pages")
                 PDDocument().use { target ->
                     val safeStart = (startPage - 1).coerceIn(0, source.numberOfPages - 1)
                     val safeEnd = (endPage - 1).coerceIn(safeStart, source.numberOfPages - 1)
@@ -77,6 +83,7 @@ object PdfEngine {
         outputFile: File
     ): File = withContext(Dispatchers.IO) {
         PDDocument.load(inputFile).use { source ->
+            if (source.numberOfPages <= 0) throw IllegalStateException("PDF has no pages")
             PDDocument().use { target ->
                 for ((origIndex, extraRotation) in pageSpecs) {
                     if (origIndex in 0 until source.numberOfPages) {
@@ -114,13 +121,14 @@ object PdfEngine {
             outputFile
         }
 
-    /** Add diagonal translucent watermark across all pages */
+    /** Add diagonal translucent watermark across all pages (ASCII-safe for Type1 font) */
     suspend fun addWatermark(
         inputFile: File,
         watermarkText: String,
         opacity: Float = 0.22f,
         outputFile: File
     ): File = withContext(Dispatchers.IO) {
+        val safeText = watermarkText.filter { it.code in 32..126 }.ifBlank { "CONFIDENTIAL" }
         PDDocument.load(inputFile).use { doc ->
             for (page in doc.pages) {
                 val box = page.cropBox ?: page.mediaBox
@@ -136,7 +144,7 @@ object PdfEngine {
                     val centerX = box.width * 0.22f
                     val centerY = box.height * 0.38f
                     cs.setTextMatrix(Matrix.getRotateInstance(Math.toRadians(35.0), centerX, centerY))
-                    cs.showText(watermarkText)
+                    cs.showText(safeText)
                     cs.endText()
                 }
             }
@@ -157,6 +165,7 @@ object PdfEngine {
         outputFile: File
     ): File = withContext(Dispatchers.IO) {
         PDDocument.load(inputFile).use { doc ->
+            if (doc.numberOfPages <= 0) throw IllegalStateException("PDF has no pages")
             val safeIndex = pageIndex.coerceIn(0, doc.numberOfPages - 1)
             val page = doc.getPage(safeIndex)
             val box = page.cropBox ?: page.mediaBox
@@ -182,6 +191,7 @@ object PdfEngine {
         outputFile: File,
         quality: Float = 0.82f
     ): File = withContext(Dispatchers.IO) {
+        if (bitmaps.isEmpty()) throw IllegalStateException("No images to convert")
         PDDocument().use { doc ->
             bitmaps.forEach { bmp ->
                 val page = PDPage(PDRectangle(bmp.width.toFloat(), bmp.height.toFloat()))
@@ -242,7 +252,9 @@ object PdfEngine {
                     for (i in 0 until renderer.pageCount) {
                         renderer.openPage(i).use { page ->
                             val targetW = 1440
-                            val targetH = (targetW.toFloat() / page.width * page.height).toInt()
+                            val targetH = (targetW.toFloat() / page.width.coerceAtLeast(1) * page.height)
+                                .toInt()
+                                .coerceAtLeast(1)
                             val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
                             bmp.eraseColor(Color.WHITE)
                             page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
