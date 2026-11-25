@@ -42,7 +42,6 @@ Java_com_offlineai_app_LlamaBridge_nativeLoad(JNIEnv *env, jobject, jstring jpat
     const char *path = env->GetStringUTFChars(jpath, nullptr);
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
-    mp.use_mmap = true;
     g_model = llama_model_load_from_file(path, mp);
     env->ReleaseStringUTFChars(jpath, path);
     if (!g_model) return JNI_FALSE;
