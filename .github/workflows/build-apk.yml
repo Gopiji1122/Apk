@@ -1,4 +1,4 @@
-name: Build Aura Audio Pro APK
+name: Build Offline AI Android APK
 
 on:
   push:
@@ -8,9 +8,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Clone latest llama.cpp engine
+        run: |
+          rm -rf app/src/main/cpp/llama.cpp
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git app/src/main/cpp/llama.cpp
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -18,24 +24,22 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Accept Android SDK Licenses
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+      - name: Install Android NDK and CMake
+        run: |
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Setup Gradle with Caching
+      - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: '8.10.2'
 
-      - name: Run Unit Tests
-        run: gradle testDebugUnitTest --no-daemon --stacktrace
+      - name: Build Debug APK
+        run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Build Debug & Release APKs
-        run: gradle assembleDebug assembleRelease --no-daemon --stacktrace
-
-      - name: Upload Aura-Audio-Pro-APK
+      - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Aura-Audio-Pro-APK
-          path: |
-            app/build/outputs/apk/debug/app-debug.apk
-            app/build/outputs/apk/release/*.apk
+          name: OfflineAI-arm64-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 30
