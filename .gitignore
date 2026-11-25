@@ -8,5 +8,5 @@
 /captures
 .externalNativeBuild
 .cxx
-app/src/main/cpp/llama.cpp/
-*.gguf
+*.jks
+*.keystore

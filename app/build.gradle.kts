@@ -5,59 +5,47 @@ plugins {
 }
 
 android {
-    namespace = "com.gopiji.auraai"
+    namespace = "com.aurapdf.editor"
     compileSdk = 35
-    ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "com.gopiji.auraai"
-        minSdk = 24
+        applicationId = "com.aurapdf.editor"
+        minSdk = 21
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.0.0"
-
-        ndk {
-            abiFilters += listOf("arm64-v8a", "x86_64")
-        }
-
-        externalNativeBuild {
-            cmake {
-                arguments += listOf(
-                    "-DANDROID_STL=c++_shared",
-                    "-DCMAKE_BUILD_TYPE=Release"
-                )
-                cppFlags += listOf("-O3", "-std=c++17")
-            }
+        versionCode = 1
+        versionName = "1.0.0"
+        vectorDrawables {
+            useSupportLibrary = true
         }
     }
 
     signingConfigs {
-        create("auraRelease") {
-            storeFile = file("aura-ai.keystore")
-            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "auraai2026"
-            keyAlias = System.getenv("KEY_ALIAS") ?: "auraai"
-            keyPassword = System.getenv("KEY_PASSWORD") ?: "auraai2026"
+        create("release") {
+            val keystorePath = System.getenv("AURA_KEYSTORE_PATH")
+            if (!keystorePath.isNullOrBlank()) {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("AURA_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("AURA_KEY_ALIAS")
+                keyPassword = System.getenv("AURA_KEY_PASSWORD")
+            }
         }
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
-            signingConfig = signingConfigs.getByName("auraRelease")
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-        }
-        debug {
-            signingConfig = signingConfigs.getByName("auraRelease")
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+            if (!System.getenv("AURA_KEYSTORE_PATH").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -72,26 +60,40 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    lint {
+        abortOnError = false
+        checkReleaseBuilds = false
     }
 
     packaging {
         resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/{AL2.0,LGPL2.1,DEPENDENCIES,LICENSE*,NOTICE*}"
         }
     }
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
-    implementation(composeBom)
     implementation("androidx.core:core-ktx:1.15.0")
-    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
-    implementation("androidx.activity:activity-compose:1.9.3")
+
+    val composeBom = platform("androidx.compose:compose-bom:2025.02.00")
+    implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
-    implementation("androidx.compose.animation:animation")
+    implementation("androidx.activity:activity-compose:1.10.0")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
+    // Core Free Offline PDF Engine (Apache PDFBox-Android)
+    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+
+    // Free On-Device Document Scanner (Auto-Crop Camera, minSdk 21+)
+    implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
+
+    // Free On-Device Offline OCR (Text Recognition)
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.2")
 }

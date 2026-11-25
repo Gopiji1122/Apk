@@ -1,8 +1,19 @@
-# Aura AI v4 — Offline Android AI Assistant
+# Aura PDF Editor (v1.0.0)
 
-## What's New in v4 (`versionCode = 2`, `versionName = "2.0.0"`)
-- **Smoother UI:** 40ms batched token streaming eliminates typing stutter.
-- **Live Telemetry HUD:** Real-time CPU%, RAM usage, GPU offload layers, Tokens/sec, and Time-to-First-Token bar.
-- **In-App Model Hub + Resumable Downloader:** Built-in curated catalog with guides, capabilities, automatic RAM compatibility badges, and RAM warning dialogs before downloading heavy models.
-- **Safe Limited GPU Offload:** Configurable 0–20 GPU layers with automatic fallback to CPU if a device GPU driver doesn't support offloading.
-- **Offline TTS & Device Control:** One-tap offline Speak button on every AI reply, Image/Audio attachment controls, and 1-tap offline Device Control actions (Timer, Alarm, Flashlight, Settings).
+**App ID:** `com.aurapdf.editor`  
+**Version:** `1.0.0` (`versionCode = 1`)  
+**Min Android:** Android 5.0 (API 21) to Android 16+  
+**Architecture:** 100% Offline, Zero Servers, Zero Paid SDKs
+
+## Features
+- **Zero-Lag PDF Reader:** Native `PdfRenderer` with `LruCache` + coroutine background rendering, pinch-to-zoom, true Night Mode (color inversion), in-PDF text search, and external `ACTION_VIEW` support.
+- **Page Organizer:** Visual thumbnail grid to rotate, reorder, and delete pages.
+- **Complete Offline Tools:** Merge PDFs, Split/Extract page ranges, Photos-to-PDF, Compress PDF (Strong / Balanced / Light), AES-128 Password Lock & Unlock, and Diagonal Watermark.
+- **Markup & Signature Pad:** Freehand Pen, Semi-Transparent Highlighter, Text Box annotations, Undo, and Finger Signature Pad.
+- **Offline OCR & Scanner:** Google ML Kit Document Scanner (auto-crop camera) and Offline OCR text extraction with 1-tap copy, plus Export Pages to PNG, Save to Downloads, and Share.
+
+## Quick Build on GitHub Actions
+1. Create a new GitHub repository and upload everything inside `Aura-PDF-Editor/` (including `.github/workflows/build-apk.yml`).
+2. Open the **Actions** tab — **Aura PDF Editor CI & Build** runs automatically.
+3. Download **Aura-PDF-Editor-v1.0.0-Debug-APK** from **Artifacts** to test immediately.
+4. For official signed updates & creator protection, follow `CREATOR_SIGNING_GUIDE.md`.

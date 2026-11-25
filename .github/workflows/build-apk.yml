@@ -1,22 +1,19 @@
-name: Build Aura AI v4 Android APK
+name: Aura PDF Editor CI & Build
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
-  build:
+  build-and-verify:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
-
-      - name: Clone llama.cpp v1.0.0 stable engine
-        run: |
-          rm -rf app/src/main/cpp/llama.cpp
-          git clone --depth 1 --branch v1.0.0 https://github.com/ggml-org/llama.cpp.git app/src/main/cpp/llama.cpp
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -24,22 +21,51 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Install Android NDK and CMake
-        run: |
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.0.12077973" "cmake;3.22.1" "platforms;android-35" "build-tools;35.0.0"
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.10.2'
+          gradle-version: '8.11.1'
 
-      - name: Build Signed Universal Release APK
-        run: gradle assembleRelease --no-daemon --stacktrace
+      - name: Build Debug APK (Error & Compile Check)
+        run: gradle assembleDebug --stacktrace
 
-      - name: Upload Aura AI v4 APK Artifact
+      - name: Run Android Lint Check
+        run: gradle lintDebug --stacktrace
+        continue-on-error: true
+
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: AuraAI-v4-universal-apk
-          path: app/build/outputs/apk/release/app-release.apk
-          retention-days: 30
+          name: Aura-PDF-Editor-v1.0.0-Debug-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Decode Creator Keystore (If Secrets Configured)
+        id: keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.AURA_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 --decode > app/aura-release-key.jks
+            echo "has_keystore=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_keystore=false" >> "$GITHUB_OUTPUT"
+            echo "Creator signing secrets not configured yet. Skipping signed release build."
+          fi
+
+      - name: Build Signed Release APK & Play Store AAB
+        if: steps.keystore.outputs.has_keystore == 'true'
+        env:
+          AURA_KEYSTORE_PATH: aura-release-key.jks
+          AURA_KEYSTORE_PASSWORD: ${{ secrets.AURA_KEYSTORE_PASSWORD }}
+          AURA_KEY_ALIAS: ${{ secrets.AURA_KEY_ALIAS }}
+          AURA_KEY_PASSWORD: ${{ secrets.AURA_KEY_PASSWORD }}
+        run: gradle assembleRelease bundleRelease --stacktrace
+
+      - name: Upload Signed Release APK & AAB
+        if: steps.keystore.outputs.has_keystore == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aura-PDF-Editor-v1.0.0-Signed-Release
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/bundle/release/app-release.aab
