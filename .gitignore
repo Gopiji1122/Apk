@@ -1,12 +1,7 @@
+.gradle/
+build/
+local.properties
+.idea/
 *.iml
-.gradle
-/local.properties
-/.idea
-.DS_Store
-/build
-/app/build
-/captures
-.externalNativeBuild
-.cxx
+.cxx/
 app/src/main/cpp/llama.cpp/
-*.gguf

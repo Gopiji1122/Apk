@@ -1,0 +1,45 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      llama_ref:
+        description: "llama.cpp tag, branch or commit"
+        default: "master"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android NDK and CMake
+        run: |
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;26.1.10909125" "cmake;3.22.1" "platforms;android-34" "build-tools;34.0.0"
+
+      - name: Fetch llama.cpp
+        run: |
+          REF="${{ github.event.inputs.llama_ref }}"
+          REF="${REF:-master}"
+          git clone --filter=blob:none https://github.com/ggml-org/llama.cpp app/src/main/cpp/llama.cpp
+          git -C app/src/main/cpp/llama.cpp checkout "$REF"
+          git -C app/src/main/cpp/llama.cpp log -1 --oneline
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build release APK
+        run: gradle --no-daemon assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OfflineAI-apk
+          path: app/build/outputs/apk/release/*.apk
