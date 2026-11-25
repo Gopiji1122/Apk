@@ -1,4 +1,4 @@
-package com.offlineai.assistant.engine
+package com.gopiji.auraai.engine
 
 interface TokenCallback {
     fun onToken(token: String)
@@ -11,7 +11,7 @@ data class PromptTurn(
 
 object LlamaEngine {
     init {
-        System.loadLibrary("offlineai")
+        System.loadLibrary("auraai")
     }
 
     @Volatile

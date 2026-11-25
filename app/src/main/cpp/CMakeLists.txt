@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.22.1)
-project(offlineai)
+project(auraai)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,16 +16,16 @@ set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
 
 add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp build-llama)
 
-add_library(offlineai SHARED
+add_library(auraai SHARED
     llama_jni.cpp
 )
 
-target_include_directories(offlineai PRIVATE
+target_include_directories(auraai PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
 )
 
-target_link_libraries(offlineai PRIVATE
+target_link_libraries(auraai PRIVATE
     llama
     android
     log

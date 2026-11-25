@@ -1,4 +1,4 @@
-package com.offlineai.assistant.data
+package com.gopiji.auraai.data
 
 import android.app.ActivityManager
 import android.content.Context
@@ -27,11 +27,11 @@ data class DeviceHardwareInfo(
 )
 
 class AppPrefs(private val context: Context) {
-    private val prefs = context.getSharedPreferences("offline_ai_prefs_v3", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences("aura_ai_prefs", Context.MODE_PRIVATE)
 
     companion object {
         const val DEFAULT_SYSTEM_PROMPT =
-            "You are a concise, accurate offline personal assistant. Answer clearly and directly, remember earlier messages in this chat, and prioritize any saved user notes provided."
+            "You are Aura AI, a concise, accurate offline personal assistant. Answer clearly and directly, remember earlier messages in this chat, and prioritize any saved user notes provided."
     }
 
     fun getHardwareInfo(): DeviceHardwareInfo {
@@ -132,8 +132,6 @@ class AppPrefs(private val context: Context) {
             ?.sortedByDescending { it.lastModified() }
             ?: emptyList()
     }
-
-    fun totalModelsSizeBytes(): Long = listImportedModels().sumOf { it.length() }
 
     fun getFileName(uri: Uri): String {
         var name = "model.gguf"

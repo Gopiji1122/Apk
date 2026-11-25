@@ -1,2 +1,2 @@
--keep class com.offlineai.assistant.engine.LlamaEngine { *; }
--keep interface com.offlineai.assistant.engine.TokenCallback { *; }
+-keep class com.gopiji.auraai.engine.LlamaEngine { *; }
+-keep interface com.gopiji.auraai.engine.TokenCallback { *; }

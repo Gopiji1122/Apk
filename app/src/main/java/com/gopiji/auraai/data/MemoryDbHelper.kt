@@ -1,4 +1,4 @@
-package com.offlineai.assistant.data
+package com.gopiji.auraai.data
 
 import android.content.ContentValues
 import android.content.Context
@@ -27,7 +27,7 @@ data class StoredChatMessage(
     val usedNotesCount: Int = 0
 )
 
-class MemoryDbHelper(context: Context) : SQLiteOpenHelper(context, "offline_ai_memory.db", null, 2) {
+class MemoryDbHelper(context: Context) : SQLiteOpenHelper(context, "aura_ai_memory.db", null, 2) {
 
     override fun onConfigure(db: SQLiteDatabase) {
         super.onConfigure(db)
@@ -79,8 +79,6 @@ class MemoryDbHelper(context: Context) : SQLiteOpenHelper(context, "offline_ai_m
             """.trimIndent()
         )
     }
-
-    // --- CHAT SESSIONS ---
 
     fun createSession(title: String = "New Chat"): ChatSession {
         val now = System.currentTimeMillis()
@@ -171,12 +169,6 @@ class MemoryDbHelper(context: Context) : SQLiteOpenHelper(context, "offline_ai_m
         }
         return result
     }
-
-    fun clearMessagesForSession(sessionId: Long) {
-        writableDatabase.delete("chat_messages", "session_id = ?", arrayOf(sessionId.toString()))
-    }
-
-    // --- TEACH AI KNOWLEDGE BASE (RAG) ---
 
     fun addNote(title: String, category: String, content: String): Long {
         val cleanTitle = title.trim().ifEmpty { "Saved Note" }

@@ -1,4 +1,4 @@
-package com.offlineai.assistant.theme
+package com.gopiji.auraai.theme
 
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -6,7 +6,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
-import com.offlineai.assistant.data.AppThemeMode
+import com.gopiji.auraai.data.AppThemeMode
 
 private val AmoledScheme = darkColorScheme(
     primary = Color.White,
@@ -57,7 +57,7 @@ fun schemeFor(mode: AppThemeMode): ColorScheme = when (mode) {
 }
 
 @Composable
-fun OfflineAiTheme(mode: AppThemeMode, content: @Composable () -> Unit) {
+fun AuraAiTheme(mode: AppThemeMode, content: @Composable () -> Unit) {
     MaterialTheme(
         colorScheme = schemeFor(mode),
         content = content

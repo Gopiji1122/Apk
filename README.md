@@ -1,15 +1,9 @@
-# Offline AI v3 — Premium Minimalist Android AI Assistant
+# Aura AI — Offline Android AI Assistant
 
-A 100% offline, zero-internet, ad-free Android AI app with a ChatGPT / Claude / Gemini inspired interface, compatible with Android 7.0 (API 24) through Android 15 (API 35) across 64-bit mobile devices (`arm64-v8a` and `x86_64`).
+A 100% offline, zero-internet, ad-free Android AI assistant powered by `llama.cpp` v1.0.0 with a minimalist ChatGPT / Gemini / Claude-inspired UI, black-and-white Aura AI logo, and universal Android 7.0–15 support.
 
-## What's New in v3
-- **3-Line Side Menu (Chat History Drawer):** View all saved chats one by one with titles, search chats, create unlimited new chats, or delete old ones.
-- **Top Model Selector Pill in Every Chat:** Tap the model pill at the top center of any chat to switch `.gguf` models or import a new one instantly.
-- **Unified Settings Hub (Settings Icon):** All extra tools and controls live cleanly inside Settings:
-  - **Models:** Import, switch, and manage `.gguf` models with auto-detected RAM guidance.
-  - **Teach AI (RAG):** Add notes, import `.txt` files, toggle RAG on/off, and set max notes per answer.
-  - **AI & Prompt:** Custom System Prompt, Max Reply Length, Temperature, Top-P, Top-K, and Fast Mode (`/no_think`).
-  - **CPU & RAM + Permissions:** Live device hardware readout, dynamic CPU thread slider, Context Window slider, and direct shortcut to Android App Permissions & Battery Settings.
-  - **App Appearance:** AMOLED Black, Dark, and Light themes + chat font scaling.
-- **Copyable AI Answers:** One-tap Copy button with animated confirmation, Regenerate button, plus native text selection on every message.
-- **Universal Device Support:** Automatically detects CPU cores and RAM on any Android 7.0+ device.
+## Permanent App ID & Future Updates
+- **App Name:** Aura AI
+- **Permanent App ID:** `com.gopiji.auraai`
+- **Consistent Signing Key:** Includes `app/aura-ai.keystore` configured in `app/build.gradle.kts`, so every GitHub Actions build uses the exact same signature.
+- **How to release an update later:** Keep `applicationId = "com.gopiji.auraai"` and `app/aura-ai.keystore` unchanged, simply increase `versionCode` (e.g., `1` -> `2`) and `versionName` (e.g., `"1.0.0"` -> `"1.1.0"`) in `app/build.gradle.kts`, push to GitHub, and install the new APK right over the existing app without losing any chats, notes, or imported `.gguf` models.

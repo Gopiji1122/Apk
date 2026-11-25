@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Zero INTERNET permission: guaranteed 100% offline privacy on all Android versions -->
     <application
         android:allowBackup="true"
-        android:label="Offline AI"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="Aura AI"
         android:largeHeap="true"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.NoActionBar">

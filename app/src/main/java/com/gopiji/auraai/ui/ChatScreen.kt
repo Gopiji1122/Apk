@@ -1,4 +1,4 @@
-package com.offlineai.assistant.ui
+package com.gopiji.auraai.ui
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
@@ -23,7 +23,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,11 +37,13 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.offlineai.assistant.data.StoredChatMessage
+import com.gopiji.auraai.R
+import com.gopiji.auraai.data.StoredChatMessage
 import kotlinx.coroutines.delay
 
 @Composable
@@ -76,27 +83,28 @@ fun ChatScreen(
                     Surface(
                         shape = CircleShape,
                         color = MaterialTheme.colorScheme.surfaceVariant,
-                        modifier = Modifier.size(64.dp)
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                        modifier = Modifier.size(68.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                Icons.Default.AutoAwesome,
-                                contentDescription = null,
+                                painter = painterResource(id = R.drawable.ic_aura_logo),
+                                contentDescription = "Aura AI",
                                 tint = MaterialTheme.colorScheme.onBackground,
-                                modifier = Modifier.size(30.dp)
+                                modifier = Modifier.size(38.dp)
                             )
                         }
                     }
                     Spacer(Modifier.height(16.dp))
                     Text(
-                        "Select an Offline Model",
+                        "Welcome to Aura AI",
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = 20.sp,
+                        fontSize = 21.sp,
                         color = MaterialTheme.colorScheme.onBackground
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Import any .gguf model from your phone storage to start chatting 100% offline with full privacy.",
+                        "Import any .gguf model from your device storage to start chatting 100% offline with full privacy.",
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 20.sp
@@ -145,7 +153,6 @@ fun ChatScreen(
             }
         }
 
-        // Premium floating pill composer (ChatGPT / Gemini / Claude style)
         Surface(
             color = MaterialTheme.colorScheme.background,
             modifier = Modifier
@@ -169,7 +176,7 @@ fun ChatScreen(
                         onValueChange = { inputText = it },
                         placeholder = {
                             Text(
-                                "Message Offline AI...",
+                                "Message Aura AI...",
                                 fontSize = (15 * fontScale).sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -255,27 +262,28 @@ private fun EmptyChatWelcome(onPromptClick: (String) -> Unit) {
         Surface(
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceVariant,
-            modifier = Modifier.size(54.dp)
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier.size(58.dp)
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    Icons.Default.AutoAwesome,
-                    contentDescription = null,
+                    painter = painterResource(id = R.drawable.ic_aura_logo),
+                    contentDescription = "Aura AI",
                     tint = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(34.dp)
                 )
             }
         }
         Spacer(Modifier.height(14.dp))
         Text(
-            "How can I help today?",
-            fontSize = 22.sp,
+            "How can Aura AI help today?",
+            fontSize = 21.sp,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onBackground
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "100% private • Runs directly on your device",
+            "100% private • Offline on-device intelligence",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -400,16 +408,16 @@ private fun AssistantMessageBlock(
             ) {
                 Box(contentAlignment = Alignment.Center) {
                     Icon(
-                        Icons.Default.AutoAwesome,
-                        contentDescription = null,
+                        painter = painterResource(id = R.drawable.ic_aura_logo),
+                        contentDescription = "Aura AI",
                         tint = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(13.dp)
+                        modifier = Modifier.size(15.dp)
                     )
                 }
             }
             Spacer(Modifier.width(8.dp))
             Text(
-                "Offline AI",
+                "Aura AI",
                 fontSize = 12.sp,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurfaceVariant

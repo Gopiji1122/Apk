@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "OfflineAI"
+rootProject.name = "AuraAI"
 include(":app")

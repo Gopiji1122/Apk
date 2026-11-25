@@ -5,19 +5,20 @@ plugins {
 }
 
 android {
-    namespace = "com.offlineai.assistant"
+    namespace = "com.gopiji.auraai"
     compileSdk = 35
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        applicationId = "com.offlineai.assistant"
+        // Permanent App ID: keep this identical on every future update
+        applicationId = "com.gopiji.auraai"
         minSdk = 24
         targetSdk = 35
-        versionCode = 3
-        versionName = "3.0.0"
+        // Increment versionCode (2, 3, 4...) whenever you release a future update
+        versionCode = 1
+        versionName = "1.0.0"
 
         ndk {
-            // Supports virtually all modern 64-bit Android phones, tablets, Chromebooks & emulators
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
 
@@ -32,13 +33,26 @@ android {
         }
     }
 
+    signingConfigs {
+        create("auraRelease") {
+            storeFile = file("aura-ai.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "auraai2026"
+            keyAlias = System.getenv("KEY_ALIAS") ?: "auraai"
+            keyPassword = System.getenv("KEY_PASSWORD") ?: "auraai2026"
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("auraRelease")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("auraRelease")
         }
     }
 

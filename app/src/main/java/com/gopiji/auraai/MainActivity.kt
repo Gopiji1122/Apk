@@ -1,5 +1,6 @@
-package com.offlineai.assistant
+package com.gopiji.auraai
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,7 +22,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,19 +36,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.offlineai.assistant.data.AppPrefs
-import com.offlineai.assistant.data.MemoryDbHelper
-import com.offlineai.assistant.data.StoredChatMessage
-import com.offlineai.assistant.engine.LlamaEngine
-import com.offlineai.assistant.engine.PromptTurn
-import com.offlineai.assistant.theme.OfflineAiTheme
-import com.offlineai.assistant.ui.ChatScreen
-import com.offlineai.assistant.ui.SettingsScreen
-import com.offlineai.assistant.ui.SettingsSection
+import com.gopiji.auraai.data.AppPrefs
+import com.gopiji.auraai.data.MemoryDbHelper
+import com.gopiji.auraai.data.StoredChatMessage
+import com.gopiji.auraai.engine.LlamaEngine
+import com.gopiji.auraai.engine.PromptTurn
+import com.gopiji.auraai.theme.AuraAiTheme
+import com.gopiji.auraai.ui.ChatScreen
+import com.gopiji.auraai.ui.SettingsScreen
+import com.gopiji.auraai.ui.SettingsSection
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,7 +59,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            OfflineAiRoot()
+            AuraAiRoot()
         }
     }
 
@@ -65,7 +73,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OfflineAiRoot() {
+fun AuraAiRoot() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -127,7 +135,7 @@ fun OfflineAiRoot() {
         }
     }
 
-    fun importModelFromUri(uri: android.net.Uri) {
+    fun importModelFromUri(uri: Uri) {
         scope.launch {
             isModelLoading = true
             showModelPickerSheet = false
@@ -235,7 +243,7 @@ fun OfflineAiRoot() {
         }
     }
 
-    OfflineAiTheme(mode = themeMode) {
+    AuraAiTheme(mode = themeMode) {
         AnimatedContent(
             targetState = showSettings,
             transitionSpec = {
@@ -336,7 +344,22 @@ fun OfflineAiRoot() {
                                     .navigationBarsPadding()
                                     .padding(14.dp)
                             ) {
-                                // New Chat Button (ChatGPT / Claude style)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(
+                                        painter = painterResource(id = R.drawable.ic_aura_logo),
+                                        contentDescription = "Aura AI",
+                                        tint = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(Modifier.width(10.dp))
+                                    Text("Aura AI", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                                }
+
+                                Spacer(Modifier.height(10.dp))
+
                                 Button(
                                     onClick = {
                                         if (isGenerating) return@Button
@@ -349,14 +372,13 @@ fun OfflineAiRoot() {
                                     modifier = Modifier.fillMaxWidth(),
                                     shape = RoundedCornerShape(14.dp)
                                 ) {
-                                    Icon(Icons.Default.EditSquare, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(8.dp))
                                     Text("New Chat", fontWeight = FontWeight.Medium)
                                 }
 
                                 Spacer(Modifier.height(10.dp))
 
-                                // Search chats
                                 OutlinedTextField(
                                     value = drawerSearch,
                                     onValueChange = { drawerSearch = it },
@@ -440,7 +462,6 @@ fun OfflineAiRoot() {
                                 HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                                 Spacer(Modifier.height(8.dp))
 
-                                // Bottom Settings Row (Models, Teach AI, CPU/RAM, Theme)
                                 Surface(
                                     shape = RoundedCornerShape(12.dp),
                                     color = Color.Transparent,
@@ -482,13 +503,11 @@ fun OfflineAiRoot() {
                                     titleContentColor = MaterialTheme.colorScheme.onBackground
                                 ),
                                 navigationIcon = {
-                                    // 3-line side menu button
                                     IconButton(onClick = { scope.launch { drawerState.open() } }) {
                                         Icon(Icons.Default.Menu, contentDescription = "Chat Menu")
                                     }
                                 },
                                 title = {
-                                    // Top Model Selector Pill (ChatGPT / Gemini / Claude style)
                                     val shortModel = loadedModelName
                                         .removeSuffix(".gguf")
                                         .removeSuffix(".GGUF")
@@ -535,7 +554,6 @@ fun OfflineAiRoot() {
                                     }
                                 },
                                 actions = {
-                                    // Quick Settings icon on top-right
                                     IconButton(
                                         onClick = {
                                             settingsStartSection = SettingsSection.AI_PARAMS
@@ -603,7 +621,6 @@ fun OfflineAiRoot() {
             }
         }
 
-        // Top Model Selector Bottom Sheet (available from every chat)
         if (showModelPickerSheet) {
             ModalBottomSheet(
                 onDismissRequest = { showModelPickerSheet = false },

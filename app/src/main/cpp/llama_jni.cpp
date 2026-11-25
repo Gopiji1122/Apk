@@ -8,7 +8,7 @@
 #include <vector>
 #include "llama.h"
 
-#define LOG_TAG "OfflineAI-JNI"
+#define LOG_TAG "AuraAI-JNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
@@ -70,7 +70,6 @@ namespace {
             }
         }
 
-        // Fallback to ChatML (Qwen, etc.)
         std::string out;
         for (size_t i = 0; i < roles.size(); ++i) {
             out += "<|im_start|>" + roles[i] + "\n" + contents[i] + "<|im_end|>\n";
@@ -92,7 +91,7 @@ namespace {
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
-Java_com_offlineai_assistant_engine_LlamaEngine_nativeLoadModel(
+Java_com_gopiji_auraai_engine_LlamaEngine_nativeLoadModel(
     JNIEnv * env,
     jobject /* thiz */,
     jstring modelPath,
@@ -113,7 +112,6 @@ Java_com_offlineai_assistant_engine_LlamaEngine_nativeLoadModel(
 
     LOGI("Loading GGUF model: %s (ctx=%d, threads=%d)", path, nCtx, nThreads);
 
-    // Uses llama.cpp default optimal load mode (auto/mmap) across all Android devices
     llama_model_params mparams = llama_model_default_params();
 
     g_model = llama_model_load_from_file(path, mparams);
@@ -142,7 +140,7 @@ Java_com_offlineai_assistant_engine_LlamaEngine_nativeLoadModel(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_offlineai_assistant_engine_LlamaEngine_nativeStop(
+Java_com_gopiji_auraai_engine_LlamaEngine_nativeStop(
     JNIEnv * /* env */,
     jobject /* thiz */
 ) {
@@ -150,7 +148,7 @@ Java_com_offlineai_assistant_engine_LlamaEngine_nativeStop(
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_offlineai_assistant_engine_LlamaEngine_nativeUnload(
+Java_com_gopiji_auraai_engine_LlamaEngine_nativeUnload(
     JNIEnv * /* env */,
     jobject /* thiz */
 ) {
@@ -160,7 +158,7 @@ Java_com_offlineai_assistant_engine_LlamaEngine_nativeUnload(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_offlineai_assistant_engine_LlamaEngine_nativeGenerateChat(
+Java_com_gopiji_auraai_engine_LlamaEngine_nativeGenerateChat(
     JNIEnv * env,
     jobject /* thiz */,
     jobjectArray jRoles,
@@ -200,14 +198,12 @@ Java_com_offlineai_assistant_engine_LlamaEngine_nativeGenerateChat(
     jclass cbClass = env->GetObjectClass(callback);
     jmethodID onTokenMethod = env->GetMethodID(cbClass, "onToken", "(Ljava/lang/String;)V");
 
-    // Isolate each chat session completely
     llama_memory_clear(llama_get_memory(g_ctx), true);
 
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
     const int n_ctx = static_cast<int>(llama_n_ctx(g_ctx));
     const int max_prompt_tokens = std::max(256, n_ctx - 256);
 
-    // Auto-trim oldest turns (keeping system prompt at index 0 + latest user turn)
     std::vector<llama_token> tokens;
     while (true) {
         std::string formatted = format_messages(g_model, roles, contents);

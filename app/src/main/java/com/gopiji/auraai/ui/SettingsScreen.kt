@@ -1,4 +1,4 @@
-package com.offlineai.assistant.ui
+package com.gopiji.auraai.ui
 
 import android.content.Intent
 import android.net.Uri
@@ -15,7 +15,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,10 +30,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.offlineai.assistant.data.AppPrefs
-import com.offlineai.assistant.data.AppThemeMode
-import com.offlineai.assistant.data.DeviceHardwareInfo
-import com.offlineai.assistant.data.KnowledgeNote
+import com.gopiji.auraai.data.AppPrefs
+import com.gopiji.auraai.data.AppThemeMode
+import com.gopiji.auraai.data.DeviceHardwareInfo
+import com.gopiji.auraai.data.KnowledgeNote
 import java.io.File
 
 enum class SettingsSection(val label: String) {
@@ -602,8 +606,7 @@ private fun DeviceSettingsTab(
                 Text("Privacy & App Permissions", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "• Network Permission: NONE (100% Offline)
-• Storage Access: Secure System File Picker (works on Android 7–15 without broad file permissions).",
+                    "• Network Permission: NONE (100% Offline)\n• Storage Access: Secure System File Picker (works on Android 7–15 without broad file permissions).",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 18.sp
