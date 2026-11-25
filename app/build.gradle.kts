@@ -10,13 +10,11 @@ android {
     ndkVersion = "27.0.12077973"
 
     defaultConfig {
-        // Permanent App ID: keep this identical on every future update
         applicationId = "com.gopiji.auraai"
         minSdk = 24
         targetSdk = 35
-        // Increment versionCode (2, 3, 4...) whenever you release a future update
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "2.0.0"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")

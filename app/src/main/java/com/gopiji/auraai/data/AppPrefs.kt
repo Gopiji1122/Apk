@@ -84,6 +84,18 @@ class AppPrefs(private val context: Context) {
             prefs.edit().putInt("cpu_threads", value.coerceIn(1, maxCores)).apply()
         }
 
+    var gpuLayers: Int
+        get() = prefs.getInt("gpu_layers", 0)
+        set(value) = prefs.edit().putInt("gpu_layers", value.coerceIn(0, 20)).apply()
+
+    var showTelemetryHud: Boolean
+        get() = prefs.getBoolean("show_telemetry_hud", true)
+        set(value) = prefs.edit().putBoolean("show_telemetry_hud", value).apply()
+
+    var deviceControlEnabled: Boolean
+        get() = prefs.getBoolean("device_control_enabled", true)
+        set(value) = prefs.edit().putBoolean("device_control_enabled", value).apply()
+
     var contextSize: Int
         get() = prefs.getInt("context_size", defaultContextSize())
         set(value) = prefs.edit().putInt("context_size", value.coerceIn(512, 8192)).apply()

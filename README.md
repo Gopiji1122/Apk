@@ -1,9 +1,8 @@
-# Aura AI — Offline Android AI Assistant
+# Aura AI v4 — Offline Android AI Assistant
 
-A 100% offline, zero-internet, ad-free Android AI assistant powered by `llama.cpp` v1.0.0 with a minimalist ChatGPT / Gemini / Claude-inspired UI, black-and-white Aura AI logo, and universal Android 7.0–15 support.
-
-## Permanent App ID & Future Updates
-- **App Name:** Aura AI
-- **Permanent App ID:** `com.gopiji.auraai`
-- **Consistent Signing Key:** Includes `app/aura-ai.keystore` configured in `app/build.gradle.kts`, so every GitHub Actions build uses the exact same signature.
-- **How to release an update later:** Keep `applicationId = "com.gopiji.auraai"` and `app/aura-ai.keystore` unchanged, simply increase `versionCode` (e.g., `1` -> `2`) and `versionName` (e.g., `"1.0.0"` -> `"1.1.0"`) in `app/build.gradle.kts`, push to GitHub, and install the new APK right over the existing app without losing any chats, notes, or imported `.gguf` models.
+## What's New in v4 (`versionCode = 2`, `versionName = "2.0.0"`)
+- **Smoother UI:** 40ms batched token streaming eliminates typing stutter.
+- **Live Telemetry HUD:** Real-time CPU%, RAM usage, GPU offload layers, Tokens/sec, and Time-to-First-Token bar.
+- **In-App Model Hub + Resumable Downloader:** Built-in curated catalog with guides, capabilities, automatic RAM compatibility badges, and RAM warning dialogs before downloading heavy models.
+- **Safe Limited GPU Offload:** Configurable 0–20 GPU layers with automatic fallback to CPU if a device GPU driver doesn't support offloading.
+- **Offline TTS & Device Control:** One-tap offline Speak button on every AI reply, Image/Audio attachment controls, and 1-tap offline Device Control actions (Timer, Alarm, Flashlight, Settings).

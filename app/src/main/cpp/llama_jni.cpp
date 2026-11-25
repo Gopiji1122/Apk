@@ -18,6 +18,7 @@ namespace {
     llama_context * g_ctx = nullptr;
     std::atomic<bool> g_stop_flag(false);
     bool g_backend_initialized = false;
+    int g_active_gpu_layers = 0;
 
     bool is_valid_utf8(const std::string & s) {
         size_t i = 0;
@@ -87,6 +88,7 @@ namespace {
             llama_model_free(g_model);
             g_model = nullptr;
         }
+        g_active_gpu_layers = 0;
     }
 }
 
@@ -96,7 +98,8 @@ Java_com_gopiji_auraai_engine_LlamaEngine_nativeLoadModel(
     jobject /* thiz */,
     jstring modelPath,
     jint nCtx,
-    jint nThreads
+    jint nThreads,
+    jint nGpuLayers
 ) {
     std::lock_guard<std::mutex> lock(g_mutex);
 
@@ -109,13 +112,23 @@ Java_com_gopiji_auraai_engine_LlamaEngine_nativeLoadModel(
 
     const char * path = env->GetStringUTFChars(modelPath, nullptr);
     if (!path) return JNI_FALSE;
+    std::string pathStr(path);
+    env->ReleaseStringUTFChars(modelPath, path);
 
-    LOGI("Loading GGUF model: %s (ctx=%d, threads=%d)", path, nCtx, nThreads);
+    int safeGpu = std::clamp(static_cast<int>(nGpuLayers), 0, 20);
+    LOGI("Loading GGUF: %s (ctx=%d, threads=%d, gpuLayers=%d)", pathStr.c_str(), nCtx, nThreads, safeGpu);
 
     llama_model_params mparams = llama_model_default_params();
+    mparams.n_gpu_layers = safeGpu;
 
-    g_model = llama_model_load_from_file(path, mparams);
-    env->ReleaseStringUTFChars(modelPath, path);
+    g_model = llama_model_load_from_file(pathStr.c_str(), mparams);
+
+    if (!g_model && safeGpu > 0) {
+        LOGE("GPU offload failed; falling back safely to CPU-only mode.");
+        safeGpu = 0;
+        mparams.n_gpu_layers = 0;
+        g_model = llama_model_load_from_file(pathStr.c_str(), mparams);
+    }
 
     if (!g_model) {
         LOGE("Failed to load GGUF model.");
@@ -135,8 +148,17 @@ Java_com_gopiji_auraai_engine_LlamaEngine_nativeLoadModel(
         return JNI_FALSE;
     }
 
-    LOGI("Model loaded successfully.");
+    g_active_gpu_layers = safeGpu;
+    LOGI("Model loaded successfully (activeGpuLayers=%d).", g_active_gpu_layers);
     return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_gopiji_auraai_engine_LlamaEngine_nativeGetActiveGpuLayers(
+    JNIEnv * /* env */,
+    jobject /* thiz */
+) {
+    return g_active_gpu_layers;
 }
 
 extern "C" JNIEXPORT void JNICALL

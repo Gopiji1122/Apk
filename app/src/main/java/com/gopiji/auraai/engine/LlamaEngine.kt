@@ -22,7 +22,12 @@ object LlamaEngine {
     var currentModelPath: String? = null
         private set
 
-    private external fun nativeLoadModel(modelPath: String, nCtx: Int, nThreads: Int): Boolean
+    @Volatile
+    var activeGpuLayers: Int = 0
+        private set
+
+    private external fun nativeLoadModel(modelPath: String, nCtx: Int, nThreads: Int, nGpuLayers: Int): Boolean
+    private external fun nativeGetActiveGpuLayers(): Int
     private external fun nativeGenerateChat(
         roles: Array<String>,
         contents: Array<String>,
@@ -35,10 +40,11 @@ object LlamaEngine {
     private external fun nativeStop()
     private external fun nativeUnload()
 
-    fun loadModel(path: String, contextSize: Int, threads: Int): Boolean {
-        val ok = nativeLoadModel(path, contextSize, threads)
+    fun loadModel(path: String, contextSize: Int, threads: Int, gpuLayers: Int = 0): Boolean {
+        val ok = nativeLoadModel(path, contextSize, threads, gpuLayers)
         isLoaded = ok
         currentModelPath = if (ok) path else null
+        activeGpuLayers = if (ok) nativeGetActiveGpuLayers() else 0
         return ok
     }
 
@@ -75,5 +81,6 @@ object LlamaEngine {
         nativeUnload()
         isLoaded = false
         currentModelPath = null
+        activeGpuLayers = 0
     }
 }

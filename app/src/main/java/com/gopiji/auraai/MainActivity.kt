@@ -2,6 +2,7 @@ package com.gopiji.auraai
 
 import android.net.Uri
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -25,6 +26,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
@@ -42,7 +44,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gopiji.auraai.data.AppPrefs
+import com.gopiji.auraai.data.CatalogModel
+import com.gopiji.auraai.data.DeviceController
+import com.gopiji.auraai.data.DownloadProgress
 import com.gopiji.auraai.data.MemoryDbHelper
+import com.gopiji.auraai.data.ModelDownloader
 import com.gopiji.auraai.data.StoredChatMessage
 import com.gopiji.auraai.engine.LlamaEngine
 import com.gopiji.auraai.engine.PromptTurn
@@ -50,10 +56,12 @@ import com.gopiji.auraai.theme.AuraAiTheme
 import com.gopiji.auraai.ui.ChatScreen
 import com.gopiji.auraai.ui.SettingsScreen
 import com.gopiji.auraai.ui.SettingsSection
+import com.gopiji.auraai.ui.TelemetryHudBar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,7 +87,27 @@ fun AuraAiRoot() {
 
     val db = remember { MemoryDbHelper(context) }
     val prefs = remember { AppPrefs(context) }
+    val downloader = remember { ModelDownloader() }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+
+    var ttsReady by remember { mutableStateOf(false) }
+    var speakingMessageId by remember { mutableStateOf<Long?>(null) }
+    val tts = remember {
+        var engine: TextToSpeech? = null
+        engine = TextToSpeech(context) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                engine?.language = Locale.getDefault()
+                ttsReady = true
+            }
+        }
+        engine
+    }
+    DisposableEffect(Unit) {
+        onDispose {
+            tts.stop()
+            tts.shutdown()
+        }
+    }
 
     var themeMode by remember { mutableStateOf(prefs.themeMode) }
     var fontScale by remember { mutableFloatStateOf(prefs.fontScale) }
@@ -103,9 +131,17 @@ fun AuraAiRoot() {
     }
     var isModelLoading by remember { mutableStateOf(false) }
     var isGenerating by remember { mutableStateOf(false) }
+    var activeDownload by remember { mutableStateOf<DownloadProgress?>(null) }
     var statusBanner by remember { mutableStateOf<String?>(null) }
 
+    var liveTokensPerSec by remember { mutableFloatStateOf(0f) }
+    var liveTtftMs by remember { mutableLongStateOf(0L) }
+    var activeGpuLayers by remember { mutableIntStateOf(LlamaEngine.activeGpuLayers) }
+
     var cpuThreads by remember { mutableIntStateOf(prefs.cpuThreads) }
+    var gpuLayers by remember { mutableIntStateOf(prefs.gpuLayers) }
+    var showTelemetryHud by remember { mutableStateOf(prefs.showTelemetryHud) }
+    var deviceControlEnabled by remember { mutableStateOf(prefs.deviceControlEnabled) }
     var contextSize by remember { mutableIntStateOf(prefs.contextSize) }
     var maxTokens by remember { mutableIntStateOf(prefs.maxTokens) }
     var temperature by remember { mutableFloatStateOf(prefs.temperature) }
@@ -121,10 +157,11 @@ fun AuraAiRoot() {
             isModelLoading = true
             statusBanner = "Loading ${file.name}..."
             val ok = withContext(Dispatchers.IO) {
-                LlamaEngine.loadModel(file.absolutePath, contextSize, cpuThreads)
+                LlamaEngine.loadModel(file.absolutePath, contextSize, cpuThreads, gpuLayers)
             }
             isModelLoading = false
             isModelLoaded = ok
+            activeGpuLayers = LlamaEngine.activeGpuLayers
             if (ok) {
                 prefs.savedModelPath = file.absolutePath
                 loadedModelName = file.name
@@ -156,6 +193,27 @@ fun AuraAiRoot() {
         }
     }
 
+    fun startCatalogDownload(model: CatalogModel) {
+        if (activeDownload != null) return
+        scope.launch {
+            activeDownload = DownloadProgress(model.id, model.fileName, 0.0, model.sizeGb * 1024.0, 0)
+            try {
+                val file = downloader.downloadModel(model, prefs.modelsDir()) { prog ->
+                    scope.launch(Dispatchers.Main) {
+                        activeDownload = prog
+                    }
+                }
+                activeDownload = null
+                importedModels = prefs.listImportedModels()
+                statusBanner = "Downloaded ${model.name}!"
+                loadModelFile(file)
+            } catch (e: Exception) {
+                activeDownload = null
+                statusBanner = e.message ?: "Download failed."
+            }
+        }
+    }
+
     val quickModelPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri -> if (uri != null) importModelFromUri(uri) }
@@ -179,6 +237,10 @@ fun AuraAiRoot() {
             append(systemPrompt.trim().ifEmpty { AppPrefs.DEFAULT_SYSTEM_PROMPT })
             if (fastNoThink) {
                 append(" Give direct, clear answers without long internal thinking blocks.")
+            }
+            if (deviceControlEnabled) {
+                append("\n")
+                append(DeviceController.ACTION_INSTRUCTIONS)
             }
             if (relevantNotes.isNotEmpty()) {
                 append("\n\n[USER SAVED KNOWLEDGE - PRIORITIZE THESE FACTS]\n")
@@ -205,9 +267,16 @@ fun AuraAiRoot() {
             usedNotesCount = relevantNotes.size
         )
         isGenerating = true
+        liveTokensPerSec = 0f
+        liveTtftMs = 0L
 
         scope.launch {
             val acc = StringBuilder()
+            val startMs = System.currentTimeMillis()
+            var firstTokenMs = 0L
+            var tokenCount = 0
+            var lastUiEmitMs = 0L
+
             withContext(Dispatchers.IO) {
                 LlamaEngine.generateChat(
                     turns = turns,
@@ -216,16 +285,37 @@ fun AuraAiRoot() {
                     topK = topK,
                     topP = topP
                 ) { token ->
+                    val now = System.currentTimeMillis()
+                    if (firstTokenMs == 0L) {
+                        firstTokenMs = now
+                    }
+                    tokenCount++
                     acc.append(token)
-                    val snapshot = acc.toString()
-                    scope.launch(Dispatchers.Main) {
-                        messages = messages.map {
-                            if (it.id == tempAiId) it.copy(text = snapshot) else it
+
+                    if (now - lastUiEmitMs >= 40L) {
+                        lastUiEmitMs = now
+                        val snapshot = acc.toString()
+                        val elapsedSec = ((now - firstTokenMs).coerceAtLeast(1L)) / 1000f
+                        val tps = if (tokenCount > 1) tokenCount / elapsedSec else 0f
+                        val ttft = firstTokenMs - startMs
+                        scope.launch(Dispatchers.Main) {
+                            liveTokensPerSec = tps
+                            liveTtftMs = ttft
+                            messages = messages.map {
+                                if (it.id == tempAiId) it.copy(text = snapshot) else it
+                            }
                         }
                     }
                 }
             }
+
             val finalReply = acc.toString().ifEmpty { "(Stopped)" }
+            if (firstTokenMs > 0L && tokenCount > 0) {
+                val totalSec = ((System.currentTimeMillis() - firstTokenMs).coerceAtLeast(1L)) / 1000f
+                liveTokensPerSec = tokenCount / totalSec
+                liveTtftMs = firstTokenMs - startMs
+            }
+
             val savedAiId = db.addMessage(currentSessionId, isUser = false, text = finalReply, usedNotesCount = relevantNotes.size)
             messages = messages.map {
                 if (it.id == tempAiId) it.copy(id = savedAiId, text = finalReply) else it
@@ -264,10 +354,14 @@ fun AuraAiRoot() {
                     importedModels = importedModels,
                     currentModelPath = LlamaEngine.currentModelPath,
                     isModelLoading = isModelLoading,
+                    activeDownload = activeDownload,
                     notes = notes,
                     themeMode = themeMode,
                     fontScale = fontScale,
                     cpuThreads = cpuThreads,
+                    gpuLayers = gpuLayers,
+                    showTelemetryHud = showTelemetryHud,
+                    deviceControlEnabled = deviceControlEnabled,
                     contextSize = contextSize,
                     maxTokens = maxTokens,
                     temperature = temperature,
@@ -279,12 +373,15 @@ fun AuraAiRoot() {
                     systemPrompt = systemPrompt,
                     onBack = { showSettings = false },
                     onImportModelUri = { importModelFromUri(it) },
+                    onDownloadCatalogModel = { startCatalogDownload(it) },
+                    onCancelDownload = { downloader.cancel() },
                     onSelectModel = { loadModelFile(it) },
                     onDeleteModel = { file ->
                         if (LlamaEngine.currentModelPath == file.absolutePath) {
                             LlamaEngine.unload()
                             isModelLoaded = false
                             loadedModelName = "Select Model"
+                            activeGpuLayers = 0
                         }
                         file.delete()
                         importedModels = prefs.listImportedModels()
@@ -317,6 +414,9 @@ fun AuraAiRoot() {
                     onThemeChange = { themeMode = it; prefs.themeMode = it },
                     onFontScaleChange = { fontScale = it; prefs.fontScale = it },
                     onThreadsChange = { cpuThreads = it; prefs.cpuThreads = it },
+                    onGpuLayersChange = { gpuLayers = it; prefs.gpuLayers = it },
+                    onShowTelemetryChange = { showTelemetryHud = it; prefs.showTelemetryHud = it },
+                    onDeviceControlChange = { deviceControlEnabled = it; prefs.deviceControlEnabled = it },
                     onContextChange = { contextSize = it; prefs.contextSize = it },
                     onMaxTokensChange = { maxTokens = it; prefs.maxTokens = it },
                     onTemperatureChange = { temperature = it; prefs.temperature = it },
@@ -481,9 +581,9 @@ fun AuraAiRoot() {
                                         Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(20.dp))
                                         Spacer(Modifier.width(12.dp))
                                         Column {
-                                            Text("Settings", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                            Text("Settings & Model Hub", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                                             Text(
-                                                "Models, Teach AI, CPU & Memory",
+                                                "Download Models, Teach AI, CPU/GPU",
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -556,7 +656,7 @@ fun AuraAiRoot() {
                                 actions = {
                                     IconButton(
                                         onClick = {
-                                            settingsStartSection = SettingsSection.AI_PARAMS
+                                            settingsStartSection = SettingsSection.MODELS
                                             showSettings = true
                                         }
                                     ) {
@@ -571,6 +671,15 @@ fun AuraAiRoot() {
                                 .fillMaxSize()
                                 .padding(innerPadding)
                         ) {
+                            if (showTelemetryHud) {
+                                TelemetryHudBar(
+                                    tokensPerSec = liveTokensPerSec,
+                                    ttftMs = liveTtftMs,
+                                    activeGpuLayers = activeGpuLayers,
+                                    isGenerating = isGenerating
+                                )
+                            }
+
                             if (statusBanner != null) {
                                 Surface(
                                     color = MaterialTheme.colorScheme.surfaceVariant,
@@ -600,8 +709,24 @@ fun AuraAiRoot() {
                                 isModelLoaded = isModelLoaded,
                                 isGenerating = isGenerating,
                                 fontScale = fontScale,
+                                speakingMessageId = speakingMessageId,
                                 onOpenModelPicker = { showModelPickerSheet = true },
                                 onStop = { LlamaEngine.stopGeneration() },
+                                onSpeakToggle = { id, text ->
+                                    if (!ttsReady) {
+                                        statusBanner = "Offline Text-to-Speech is not ready on this device."
+                                    } else if (speakingMessageId == id) {
+                                        tts.stop()
+                                        speakingMessageId = null
+                                    } else {
+                                        tts.stop()
+                                        speakingMessageId = id
+                                        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, id.toString())
+                                    }
+                                },
+                                onExecuteDeviceAction = { action ->
+                                    statusBanner = DeviceController.executeAction(context, action)
+                                },
                                 onRegenerateLast = {
                                     if (!isGenerating && messages.size >= 2 && !messages.last().isUser) {
                                         val lastAi = messages.last()
@@ -635,7 +760,7 @@ fun AuraAiRoot() {
                     Text("Switch Offline Model", fontWeight = FontWeight.SemiBold, fontSize = 17.sp)
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        "Pick any imported .gguf model or import a new one.",
+                        "Pick an installed model, import a .gguf, or open the Model Hub to download.",
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -643,7 +768,7 @@ fun AuraAiRoot() {
 
                     if (importedModels.isEmpty()) {
                         Text(
-                            "No models imported yet.",
+                            "No models installed yet.",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(vertical = 8.dp)
@@ -685,6 +810,20 @@ fun AuraAiRoot() {
 
                     Spacer(Modifier.height(12.dp))
                     Button(
+                        onClick = {
+                            showModelPickerSheet = false
+                            settingsStartSection = SettingsSection.MODELS
+                            showSettings = true
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Open Model Hub (Download Free Models)")
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
                         onClick = { quickModelPicker.launch(arrayOf("*/*")) },
                         enabled = !isModelLoading,
                         modifier = Modifier.fillMaxWidth(),
@@ -692,7 +831,7 @@ fun AuraAiRoot() {
                     ) {
                         Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Import .gguf Model from Phone")
+                        Text("Import .gguf from Phone Storage")
                     }
                     Spacer(Modifier.height(14.dp))
                 }

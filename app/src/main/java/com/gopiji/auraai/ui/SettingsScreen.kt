@@ -16,10 +16,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,15 +35,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gopiji.auraai.data.AppPrefs
 import com.gopiji.auraai.data.AppThemeMode
+import com.gopiji.auraai.data.CatalogModel
 import com.gopiji.auraai.data.DeviceHardwareInfo
+import com.gopiji.auraai.data.DownloadProgress
 import com.gopiji.auraai.data.KnowledgeNote
+import com.gopiji.auraai.data.ModelCatalog
 import java.io.File
 
 enum class SettingsSection(val label: String) {
-    MODELS("Models"),
+    MODELS("Model Hub"),
     TEACH("Teach AI"),
     AI_PARAMS("AI & Prompt"),
-    DEVICE("CPU & RAM"),
+    DEVICE("CPU / GPU / RAM"),
     APPEARANCE("App")
 }
 
@@ -52,10 +58,14 @@ fun SettingsScreen(
     importedModels: List<File>,
     currentModelPath: String?,
     isModelLoading: Boolean,
+    activeDownload: DownloadProgress?,
     notes: List<KnowledgeNote>,
     themeMode: AppThemeMode,
     fontScale: Float,
     cpuThreads: Int,
+    gpuLayers: Int,
+    showTelemetryHud: Boolean,
+    deviceControlEnabled: Boolean,
     contextSize: Int,
     maxTokens: Int,
     temperature: Float,
@@ -67,6 +77,8 @@ fun SettingsScreen(
     systemPrompt: String,
     onBack: () -> Unit,
     onImportModelUri: (Uri) -> Unit,
+    onDownloadCatalogModel: (CatalogModel) -> Unit,
+    onCancelDownload: () -> Unit,
     onSelectModel: (File) -> Unit,
     onDeleteModel: (File) -> Unit,
     onReloadModelWithSettings: () -> Unit,
@@ -76,6 +88,9 @@ fun SettingsScreen(
     onThemeChange: (AppThemeMode) -> Unit,
     onFontScaleChange: (Float) -> Unit,
     onThreadsChange: (Int) -> Unit,
+    onGpuLayersChange: (Int) -> Unit,
+    onShowTelemetryChange: (Boolean) -> Unit,
+    onDeviceControlChange: (Boolean) -> Unit,
     onContextChange: (Int) -> Unit,
     onMaxTokensChange: (Int) -> Unit,
     onTemperatureChange: (Float) -> Unit,
@@ -139,12 +154,15 @@ fun SettingsScreen(
                 label = "SettingsTabAnim"
             ) { section ->
                 when (section) {
-                    SettingsSection.MODELS -> ModelsSettingsTab(
+                    SettingsSection.MODELS -> ModelsHubTab(
                         importedModels = importedModels,
                         currentModelPath = currentModelPath,
                         isModelLoading = isModelLoading,
+                        activeDownload = activeDownload,
                         totalRamGb = hardwareInfo.totalRamGb,
                         onImportModelUri = onImportModelUri,
+                        onDownloadModel = onDownloadCatalogModel,
+                        onCancelDownload = onCancelDownload,
                         onSelectModel = onSelectModel,
                         onDeleteModel = onDeleteModel
                     )
@@ -167,21 +185,27 @@ fun SettingsScreen(
                         topK = topK,
                         topP = topP,
                         fastNoThink = fastNoThink,
+                        deviceControlEnabled = deviceControlEnabled,
                         onSystemPromptChange = onSystemPromptChange,
                         onMaxTokensChange = onMaxTokensChange,
                         onTemperatureChange = onTemperatureChange,
                         onTopKChange = onTopKChange,
                         onTopPChange = onTopPChange,
-                        onFastModeChange = onFastModeChange
+                        onFastModeChange = onFastModeChange,
+                        onDeviceControlChange = onDeviceControlChange
                     )
 
                     SettingsSection.DEVICE -> DeviceSettingsTab(
                         hardwareInfo = hardwareInfo,
                         cpuThreads = cpuThreads,
+                        gpuLayers = gpuLayers,
+                        showTelemetryHud = showTelemetryHud,
                         contextSize = contextSize,
                         hasLoadedModel = currentModelPath != null,
                         isModelLoading = isModelLoading,
                         onThreadsChange = onThreadsChange,
+                        onGpuLayersChange = onGpuLayersChange,
+                        onShowTelemetryChange = onShowTelemetryChange,
                         onContextChange = onContextChange,
                         onApplyAndReload = onReloadModelWithSettings
                     )
@@ -199,23 +223,48 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun ModelsSettingsTab(
+private fun ModelsHubTab(
     importedModels: List<File>,
     currentModelPath: String?,
     isModelLoading: Boolean,
+    activeDownload: DownloadProgress?,
     totalRamGb: Double,
     onImportModelUri: (Uri) -> Unit,
+    onDownloadModel: (CatalogModel) -> Unit,
+    onCancelDownload: () -> Unit,
     onSelectModel: (File) -> Unit,
     onDeleteModel: (File) -> Unit
 ) {
+    var pendingWarningModel by remember { mutableStateOf<CatalogModel?>(null) }
     val modelPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri -> if (uri != null) onImportModelUri(uri) }
 
-    val ramTip = when {
-        totalRamGb >= 10.0 -> "Your device has %.1f GB RAM — supports 4B to 8B Q4_K_M models.".format(totalRamGb)
-        totalRamGb >= 6.0 -> "Your device has %.1f GB RAM — best with 3B to 4B Q4_K_M models (Qwen 3.5 4B, Phi-4-Mini).".format(totalRamGb)
-        else -> "Your device has %.1f GB RAM — recommended: 1B to 2B Q4_K_M models.".format(totalRamGb)
+    if (pendingWarningModel != null) {
+        val m = pendingWarningModel!!
+        AlertDialog(
+            onDismissRequest = { pendingWarningModel = null },
+            icon = { Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFFFB74D)) },
+            title = { Text("Device RAM Warning") },
+            text = {
+                Text(
+                    "${m.name} needs at least ${m.minRamGb} GB RAM (recommended ${m.recommendedRamGb} GB), but your device has %.1f GB physical RAM. It may run very slowly or crash when loading. Download anyway?".format(totalRamGb)
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    pendingWarningModel = null
+                    onDownloadModel(m)
+                }) {
+                    Text("Download Anyway")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingWarningModel = null }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 
     LazyColumn(
@@ -223,13 +272,42 @@ private fun ModelsSettingsTab(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        if (activeDownload != null) {
+            item {
+                SettingsCard {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Downloading ${activeDownload.fileName}", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(
+                                "%.1f MB / %.1f MB (%d%%)".format(activeDownload.downloadedMb, activeDownload.totalMb, activeDownload.percent),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        IconButton(onClick = onCancelDownload) {
+                            Icon(Icons.Default.Cancel, contentDescription = "Cancel Download")
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    LinearProgressIndicator(
+                        progress = { activeDownload.percent / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+
         item {
             SettingsCard {
-                Text("Offline GGUF Models", fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Text("Import Local .gguf File", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                 Spacer(Modifier.height(4.dp))
-                Text(ramTip, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(12.dp))
-                Button(
+                Text(
+                    "Detected %.1f GB physical RAM on this device.".format(totalRamGb),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedButton(
                     onClick = { modelPicker.launch(arrayOf("*/*")) },
                     enabled = !isModelLoading,
                     modifier = Modifier.fillMaxWidth(),
@@ -237,29 +315,20 @@ private fun ModelsSettingsTab(
                 ) {
                     Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text(if (isModelLoading) "Working..." else "Import .gguf Model from Storage")
+                    Text(if (isModelLoading) "Working..." else "Import .gguf from Phone Storage")
                 }
             }
         }
 
-        item {
-            Text(
-                "Installed Models (${importedModels.size})",
-                fontSize = 13.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-
-        if (importedModels.isEmpty()) {
+        if (importedModels.isNotEmpty()) {
             item {
                 Text(
-                    "No .gguf models imported yet. Download any Q4_K_M .gguf file from Hugging Face, then tap Import above.",
+                    "Installed on Device (${importedModels.size})",
                     fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        } else {
             items(importedModels, key = { it.absolutePath }) { file ->
                 val isActive = currentModelPath == file.absolutePath
                 val sizeGb = String.format("%.2f GB", file.length() / (1024.0 * 1024.0 * 1024.0))
@@ -291,6 +360,83 @@ private fun ModelsSettingsTab(
                             Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
+                }
+            }
+        }
+
+        item {
+            Text(
+                "Recommended Free Models (In-App Download)",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
+        items(ModelCatalog.models, key = { it.id }) { model ->
+            val alreadyInstalled = importedModels.any { it.name.equals(model.fileName, ignoreCase = true) }
+            val fitsGreat = totalRamGb >= model.recommendedRamGb
+            val tightFit = totalRamGb >= model.minRamGb && totalRamGb < model.recommendedRamGb
+            val badgeColor = when {
+                fitsGreat -> Color(0xFF66BB6A)
+                tightFit -> Color(0xFFFFB74D)
+                else -> Color(0xFFEF5350)
+            }
+            val badgeText = when {
+                fitsGreat -> "Fits Great (${model.minRamGb.toInt()}GB+ RAM)"
+                tightFit -> "Tight Fit (Close bg apps)"
+                else -> "Exceeds RAM (${model.minRamGb.toInt()}GB+ req)"
+            }
+
+            SettingsCard {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(model.name, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                        Text(
+                            "${model.category} • ~${model.sizeGb} GB",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = badgeColor.copy(alpha = 0.16f)
+                    ) {
+                        Text(
+                            badgeText,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = badgeColor,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(model.description, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(4.dp))
+                Text("Guide: ${model.guide}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Capabilities: ${model.capabilities.joinToString(" • ") { it.label }}",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = {
+                        if (totalRamGb < model.minRamGb) {
+                            pendingWarningModel = model
+                        } else {
+                            onDownloadModel(model)
+                        }
+                    },
+                    enabled = activeDownload == null && !alreadyInstalled,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Download, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (alreadyInstalled) "Already Downloaded" else "Download (~${model.sizeGb} GB)")
                 }
             }
         }
@@ -443,12 +589,14 @@ private fun AiParamsSettingsTab(
     topK: Int,
     topP: Float,
     fastNoThink: Boolean,
+    deviceControlEnabled: Boolean,
     onSystemPromptChange: (String) -> Unit,
     onMaxTokensChange: (Int) -> Unit,
     onTemperatureChange: (Float) -> Unit,
     onTopKChange: (Int) -> Unit,
     onTopPChange: (Float) -> Unit,
-    onFastModeChange: (Boolean) -> Unit
+    onFastModeChange: (Boolean) -> Unit,
+    onDeviceControlChange: (Boolean) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -475,7 +623,7 @@ private fun AiParamsSettingsTab(
 
         item {
             SettingsCard {
-                Text("Generation Controls", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                Text("Generation & Agent Controls", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                 Spacer(Modifier.height(10.dp))
 
                 Text("Max Reply Length: $maxTokens tokens", fontSize = 13.sp)
@@ -517,12 +665,26 @@ private fun AiParamsSettingsTab(
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Fast Mode (Skip Long Thinking)", fontWeight = FontWeight.Medium, fontSize = 14.sp)
                         Text(
-                            "Appends /no_think for Qwen 3/3.5 so answers start immediately. Turn OFF for hard logic puzzles.",
+                            "Appends /no_think for Qwen 3/3.5 so answers start immediately.",
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(checked = fastNoThink, onCheckedChange = onFastModeChange)
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Offline Device Control", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                        Text(
+                            "Lets Aura AI offer 1-tap buttons to set timers, alarms, flashlight, or open settings.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = deviceControlEnabled, onCheckedChange = onDeviceControlChange)
                 }
             }
         }
@@ -533,10 +695,14 @@ private fun AiParamsSettingsTab(
 private fun DeviceSettingsTab(
     hardwareInfo: DeviceHardwareInfo,
     cpuThreads: Int,
+    gpuLayers: Int,
+    showTelemetryHud: Boolean,
     contextSize: Int,
     hasLoadedModel: Boolean,
     isModelLoading: Boolean,
     onThreadsChange: (Int) -> Unit,
+    onGpuLayersChange: (Int) -> Unit,
+    onShowTelemetryChange: (Boolean) -> Unit,
     onContextChange: (Int) -> Unit,
     onApplyAndReload: () -> Unit
 ) {
@@ -563,7 +729,21 @@ private fun DeviceSettingsTab(
 
         item {
             SettingsCard {
-                Text("CPU & Memory Allocation", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                Text("CPU, Safe GPU & Memory Allocation", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                Spacer(Modifier.height(10.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Live Telemetry HUD", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                        Text(
+                            "Show real-time CPU%, RAM, GPU layers, and tokens/sec bar above chat.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(checked = showTelemetryHud, onCheckedChange = onShowTelemetryChange)
+                }
+
                 Spacer(Modifier.height(10.dp))
 
                 val maxCores = hardwareInfo.cpuCores.coerceAtLeast(2)
@@ -575,12 +755,15 @@ private fun DeviceSettingsTab(
                     steps = (maxCores - 2).coerceAtLeast(0)
                 )
 
-                Text("Context Window (Chat Memory): $contextSize tokens", fontSize = 13.sp)
-                Text(
-                    "Higher context remembers longer chats but uses more RAM.",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                Text("Safe GPU Offload Layers: $gpuLayers (Max 20, auto-falls back to CPU)", fontSize = 13.sp)
+                Slider(
+                    value = gpuLayers.toFloat(),
+                    onValueChange = { onGpuLayersChange(it.toInt()) },
+                    valueRange = 0f..20f,
+                    steps = 19
                 )
+
+                Text("Context Window (Chat Memory): $contextSize tokens", fontSize = 13.sp)
                 Slider(
                     value = contextSize.toFloat(),
                     onValueChange = { onContextChange(((it.toInt() / 512) * 512).coerceAtLeast(512)) },
@@ -595,7 +778,7 @@ private fun DeviceSettingsTab(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(14.dp)
                     ) {
-                        Text(if (isModelLoading) "Reloading..." else "Apply CPU & Memory Changes Now")
+                        Text(if (isModelLoading) "Reloading..." else "Apply Hardware Changes Now")
                     }
                 }
             }
@@ -606,7 +789,7 @@ private fun DeviceSettingsTab(
                 Text("Privacy & App Permissions", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "• Network Permission: NONE (100% Offline)\n• Storage Access: Secure System File Picker (works on Android 7–15 without broad file permissions).",
+                    "• Chat Privacy: 100% Offline on-device inference.\n• Internet: Used ONLY when you tap Download in the Model Hub.\n• Storage: Secure System File Picker (Android 7–15).",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 18.sp

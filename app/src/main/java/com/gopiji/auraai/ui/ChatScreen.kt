@@ -1,7 +1,9 @@
 package com.gopiji.auraai.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -24,11 +26,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.AudioFile
+import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,6 +50,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.gopiji.auraai.R
+import com.gopiji.auraai.data.DeviceController
+import com.gopiji.auraai.data.ParsedDeviceAction
 import com.gopiji.auraai.data.StoredChatMessage
 import kotlinx.coroutines.delay
 
@@ -52,15 +61,31 @@ fun ChatScreen(
     isModelLoaded: Boolean,
     isGenerating: Boolean,
     fontScale: Float,
+    speakingMessageId: Long?,
     onOpenModelPicker: () -> Unit,
     onStop: () -> Unit,
     onRegenerateLast: () -> Unit,
+    onSpeakToggle: (Long, String) -> Unit,
+    onExecuteDeviceAction: (ParsedDeviceAction) -> Unit,
     onSend: (String) -> Unit
 ) {
     var inputText by remember { mutableStateOf("") }
+    var attachedLabel by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(messages.size, messages.lastOrNull()?.text?.length) {
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) attachedLabel = "Image attached"
+    }
+
+    val audioPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) attachedLabel = "Audio attached"
+    }
+
+    LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
@@ -104,7 +129,7 @@ fun ChatScreen(
                     )
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "Import any .gguf model from your device storage to start chatting 100% offline with full privacy.",
+                        "Download a recommended model in-app or import any .gguf file to start chatting 100% offline.",
                         fontSize = 14.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         lineHeight = 20.sp
@@ -117,7 +142,7 @@ fun ChatScreen(
                     ) {
                         Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("Choose or Import Model", fontWeight = FontWeight.Medium)
+                        Text("Download or Import Model", fontWeight = FontWeight.Medium)
                     }
                 }
             }
@@ -127,7 +152,7 @@ fun ChatScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 14.dp),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 if (messages.isEmpty()) {
@@ -146,6 +171,9 @@ fun ChatScreen(
                             fontScale = fontScale,
                             isStreaming = isLast && isGenerating,
                             showRegenerate = isLast && !isGenerating,
+                            isSpeaking = speakingMessageId == msg.id,
+                            onSpeakToggle = { onSpeakToggle(msg.id, msg.text) },
+                            onExecuteAction = onExecuteDeviceAction,
                             onRegenerate = onRegenerateLast
                         )
                     }
@@ -158,89 +186,147 @@ fun ChatScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.Bottom
+            Column {
+                if (attachedLabel != null) {
+                    Row(
+                        modifier = Modifier.padding(start = 8.dp, bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(attachedLabel!!, fontSize = 12.sp)
+                                Spacer(Modifier.width(6.dp))
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Remove",
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clickable { attachedLabel = null }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(28.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                 ) {
-                    TextField(
-                        value = inputText,
-                        onValueChange = { inputText = it },
-                        placeholder = {
-                            Text(
-                                "Message Aura AI...",
-                                fontSize = (15 * fontScale).sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 6.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        IconButton(
+                            onClick = { imagePicker.launch(arrayOf("image/*")) },
+                            enabled = isModelLoaded && !isGenerating,
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Image,
+                                contentDescription = "Attach Image",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
                             )
-                        },
-                        modifier = Modifier.weight(1f),
-                        maxLines = 5,
-                        enabled = isModelLoaded && !isGenerating,
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            disabledContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            disabledIndicatorColor = Color.Transparent
-                        ),
-                        textStyle = LocalTextStyle.current.copy(
-                            fontSize = (15 * fontScale).sp,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    )
+                        }
 
-                    Spacer(Modifier.width(4.dp))
+                        IconButton(
+                            onClick = { audioPicker.launch(arrayOf("audio/*")) },
+                            enabled = isModelLoaded && !isGenerating,
+                            modifier = Modifier.size(38.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.AudioFile,
+                                contentDescription = "Attach Audio",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
 
-                    Box(modifier = Modifier.padding(bottom = 4.dp)) {
-                        AnimatedContent(
-                            targetState = isGenerating,
-                            transitionSpec = {
-                                (fadeIn(tween(150)) + scaleIn(initialScale = 0.85f)) togetherWith
-                                    (fadeOut(tween(150)) + scaleOut(targetScale = 0.85f))
+                        TextField(
+                            value = inputText,
+                            onValueChange = { inputText = it },
+                            placeholder = {
+                                Text(
+                                    "Message Aura AI...",
+                                    fontSize = (15 * fontScale).sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             },
-                            label = "SendStopAnim"
-                        ) { generating ->
-                            if (generating) {
-                                FilledIconButton(
-                                    onClick = onStop,
-                                    shape = CircleShape,
-                                    colors = IconButtonDefaults.filledIconButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.primary,
-                                        contentColor = MaterialTheme.colorScheme.onPrimary
-                                    ),
-                                    modifier = Modifier.size(40.dp)
-                                ) {
-                                    Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(20.dp))
-                                }
-                            } else {
-                                FilledIconButton(
-                                    onClick = {
-                                        val trimmed = inputText.trim()
-                                        if (trimmed.isNotEmpty()) {
-                                            inputText = ""
-                                            onSend(trimmed)
-                                        }
-                                    },
-                                    enabled = isModelLoaded && inputText.isNotBlank(),
-                                    shape = CircleShape,
-                                    colors = IconButtonDefaults.filledIconButtonColors(
-                                        containerColor = MaterialTheme.colorScheme.primary,
-                                        contentColor = MaterialTheme.colorScheme.onPrimary,
-                                        disabledContainerColor = MaterialTheme.colorScheme.outline,
-                                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
-                                    ),
-                                    modifier = Modifier.size(40.dp)
-                                ) {
-                                    Icon(Icons.Default.ArrowUpward, contentDescription = "Send", modifier = Modifier.size(20.dp))
+                            modifier = Modifier.weight(1f),
+                            maxLines = 5,
+                            enabled = isModelLoaded && !isGenerating,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                disabledContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                disabledIndicatorColor = Color.Transparent
+                            ),
+                            textStyle = LocalTextStyle.current.copy(
+                                fontSize = (15 * fontScale).sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        )
+
+                        Spacer(Modifier.width(4.dp))
+
+                        Box(modifier = Modifier.padding(bottom = 4.dp)) {
+                            AnimatedContent(
+                                targetState = isGenerating,
+                                transitionSpec = {
+                                    (fadeIn(tween(150)) + scaleIn(initialScale = 0.85f)) togetherWith
+                                        (fadeOut(tween(150)) + scaleOut(targetScale = 0.85f))
+                                },
+                                label = "SendStopAnim"
+                            ) { generating ->
+                                if (generating) {
+                                    FilledIconButton(
+                                        onClick = onStop,
+                                        shape = CircleShape,
+                                        colors = IconButtonDefaults.filledIconButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary
+                                        ),
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(Icons.Default.Stop, contentDescription = "Stop", modifier = Modifier.size(20.dp))
+                                    }
+                                } else {
+                                    FilledIconButton(
+                                        onClick = {
+                                            val trimmed = inputText.trim()
+                                            if (trimmed.isNotEmpty()) {
+                                                val prefix = if (attachedLabel != null) "[${attachedLabel}] " else ""
+                                                inputText = ""
+                                                attachedLabel = null
+                                                onSend(prefix + trimmed)
+                                            }
+                                        },
+                                        enabled = isModelLoaded && inputText.isNotBlank(),
+                                        shape = CircleShape,
+                                        colors = IconButtonDefaults.filledIconButtonColors(
+                                            containerColor = MaterialTheme.colorScheme.primary,
+                                            contentColor = MaterialTheme.colorScheme.onPrimary,
+                                            disabledContainerColor = MaterialTheme.colorScheme.outline,
+                                            disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                        ),
+                                        modifier = Modifier.size(40.dp)
+                                    ) {
+                                        Icon(Icons.Default.ArrowUpward, contentDescription = "Send", modifier = Modifier.size(20.dp))
+                                    }
                                 }
                             }
                         }
@@ -256,7 +342,7 @@ private fun EmptyChatWelcome(onPromptClick: (String) -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 36.dp, bottom = 16.dp),
+            .padding(top = 28.dp, bottom = 16.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Surface(
@@ -287,12 +373,12 @@ private fun EmptyChatWelcome(onPromptClick: (String) -> Unit) {
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(22.dp))
 
         val starters = listOf(
             Pair("Study Helper", "Quiz me with 3 MCQs from my saved notes"),
             Pair("PC Assistant", "Give me 5 safe fixes for a slow Windows PC"),
-            Pair("Explain Simply", "Explain how CPU, RAM, and SSD work together")
+            Pair("Device Control", "Set a 5 minute study break timer")
         )
         starters.forEach { (tag, prompt) ->
             Surface(
@@ -382,10 +468,19 @@ private fun AssistantMessageBlock(
     fontScale: Float,
     isStreaming: Boolean,
     showRegenerate: Boolean,
+    isSpeaking: Boolean,
+    onSpeakToggle: () -> Unit,
+    onExecuteAction: (ParsedDeviceAction) -> Unit,
     onRegenerate: () -> Unit
 ) {
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
+    val parsedAction = remember(msg.text, isStreaming) {
+        if (!isStreaming) DeviceController.parseAction(msg.text) else null
+    }
+    val displayText = remember(msg.text, parsedAction) {
+        if (parsedAction != null) msg.text.replace(parsedAction.rawTag, "").trim() else msg.text
+    }
 
     LaunchedEffect(copied) {
         if (copied) {
@@ -394,11 +489,7 @@ private fun AssistantMessageBlock(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .animateContentSize(animationSpec = tween(150))
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Surface(
                 shape = CircleShape,
@@ -440,12 +531,12 @@ private fun AssistantMessageBlock(
 
         Spacer(Modifier.height(6.dp))
 
-        if (msg.text.isEmpty() && isStreaming) {
+        if (displayText.isEmpty() && isStreaming) {
             ThinkingPulse()
         } else {
             SelectionContainer {
                 Text(
-                    text = msg.text,
+                    text = displayText,
                     color = MaterialTheme.colorScheme.onBackground,
                     fontSize = (15 * fontScale).sp,
                     lineHeight = (23 * fontScale).sp,
@@ -456,69 +547,75 @@ private fun AssistantMessageBlock(
             }
         }
 
-        if (!isStreaming && msg.text.isNotEmpty()) {
+        if (parsedAction != null) {
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = { onExecuteAction(parsedAction) },
+                shape = RoundedCornerShape(14.dp)
+            ) {
+                Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(parsedAction.label, fontSize = 13.sp)
+            }
+        }
+
+        if (!isStreaming && displayText.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = Color.Transparent,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(12.dp))
-                        .clickable {
-                            clipboard.setText(AnnotatedString(msg.text))
-                            copied = true
-                        }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
-                            contentDescription = "Copy answer",
-                            tint = if (copied) Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            text = if (copied) "Copied" else "Copy",
-                            fontSize = 12.sp,
-                            color = if (copied) Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                ActionChipButton(
+                    icon = if (copied) Icons.Default.Check else Icons.Default.ContentCopy,
+                    label = if (copied) "Copied" else "Copy",
+                    tint = if (copied) Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = {
+                        clipboard.setText(AnnotatedString(displayText))
+                        copied = true
                     }
-                }
+                )
+
+                ActionChipButton(
+                    icon = if (isSpeaking) Icons.Default.Stop else Icons.Default.VolumeUp,
+                    label = if (isSpeaking) "Stop" else "Speak",
+                    tint = if (isSpeaking) Color(0xFF66BB6A) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    onClick = onSpeakToggle
+                )
 
                 if (showRegenerate) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color.Transparent,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .clickable { onRegenerate() }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Regenerate",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(15.dp)
-                            )
-                            Spacer(Modifier.width(5.dp))
-                            Text(
-                                text = "Regenerate",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    ActionChipButton(
+                        icon = Icons.Default.Refresh,
+                        label = "Regenerate",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        onClick = onRegenerate
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ActionChipButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = Color.Transparent,
+        modifier = Modifier
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(5.dp))
+            Text(text = label, fontSize = 12.sp, color = tint)
         }
     }
 }

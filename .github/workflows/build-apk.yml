@@ -1,4 +1,4 @@
-name: Build Aura AI Android APK
+name: Build Aura AI v4 Android APK
 
 on:
   push:
@@ -37,9 +37,9 @@ jobs:
       - name: Build Signed Universal Release APK
         run: gradle assembleRelease --no-daemon --stacktrace
 
-      - name: Upload Aura AI APK Artifact
+      - name: Upload Aura AI v4 APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: AuraAI-universal-apk
+          name: AuraAI-v4-universal-apk
           path: app/build/outputs/apk/release/app-release.apk
           retention-days: 30
