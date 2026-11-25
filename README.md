@@ -1,12 +1,13 @@
-# Aura PDF Editor v2.0.0
+# Aura PDF Editor v3.0.0 — Unified Offline Acrobat-Style PDF Studio
 
-100% Offline, Ad-Free Android PDF Suite (`com.aurapdf.editor`, `versionCode = 2`).
-
-## What's New in v2.0.0
-- **Three-Line Left Side Menu Drawer:** All tools, File Opener, and Theme switcher organized cleanly in a slide-out drawer.
-- **Home Screen Layout:** Directly shows **Recent PDFs** right under the **Aura PDF Editor** heading, followed by the full 2-column PDF Tools grid.
-- **Proper Back-Button Navigation:** Dedicated navigation back-stack + `BackHandler` returns you to the previous page instead of exiting the app.
-- **Create Blank PDF Studio:** Build multi-page PDFs from scratch (A4/Letter/Legal, Portrait/Landscape, auto page numbers) with styled text, JPG/PNG images, and clickable hyperlinks.
-- **Word (`.docx`) & Excel (`.xlsx` / `.csv`) to PDF:** 100% offline conversion.
-- **PDF Link Manager:** Inspect all clickable hyperlinks in any PDF, add new links under text, or remove individual/all links.
-- **Full Premium Toolkit:** Zero-lag Reader with pinch-zoom & Night Invert mode, Merge, Split, Rotate, Delete Page, Watermark, Signature Pad, Password Lock/Unlock, and Offline ML Kit OCR.
+## What's New in v3.0.0 (`com.aurapdf.editor`, `versionCode = 3`)
+- **Unified Live Editor Workspace:** Creating a blank PDF, opening an existing PDF, or converting Word/Excel/Images launches straight into one continuous PDF Editor Workspace where you can apply EVERY tool in sequence with live preview and multi-step **Undo**.
+- **Full Offline Acrobat-Style Toolbar Inside Every Open PDF:**
+  - **Text & Sticky Notes:** Custom font size, Bold/Italic, colors, yellow Sticky Note box, and optional clickable link under text.
+  - **Images:** Insert JPG/PNG anywhere on any page with size and position controls.
+  - **Links Manager:** Add clickable links under text, inspect existing links, or remove individual/all links.
+  - **Normal & Digital Signatures:** Draw hand signatures OR stamp a **Digital Signature Certificate** with Signer Name, Reason, Location, Timestamp, and real **SHA-256 hash**.
+  - **Highlight & Permanent Redact:** Semi-transparent yellow highlighter and permanent black redaction boxes.
+  - **Custom Watermark:** Custom text, size, opacity, angle, color, and single/all pages.
+  - **Organize Pages:** Add blank pages, merge another PDF into the current one, rotate, move up, delete page, auto page numbers, and split range.
+  - **Password Security, Offline ML Kit OCR, Compress PDF, and Export Page as PNG.**

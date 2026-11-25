@@ -29,6 +29,18 @@ class PdfStorage(private val context: Context) {
         return dir
     }
 
+    fun undoDir(): File {
+        val dir = File(context.cacheDir, "undo_snapshots")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    fun createUndoSnapshot(source: File): File {
+        val snap = File(undoDir(), "snap_${System.nanoTime()}.pdf")
+        source.copyTo(snap, overwrite = true)
+        return snap
+    }
+
     fun listRecentPdfs(): List<RecentPdfItem> {
         return pdfDir()
             .listFiles { f -> f.isFile && f.name.endsWith(".pdf", ignoreCase = true) }
@@ -82,14 +94,14 @@ class PdfStorage(private val context: Context) {
         return dest
     }
 
-    fun sharePdf(file: File) {
+    fun shareFile(file: File, mime: String = "application/pdf") {
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "application/pdf"
+            type = mime
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-        context.startActivity(Intent.createChooser(intent, "Share PDF"))
+        context.startActivity(Intent.createChooser(intent, "Share File"))
     }
 }

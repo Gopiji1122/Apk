@@ -51,7 +51,6 @@ object OfficeConverter {
         return result
     }
 
-    // Extract paragraphs from .docx (word/document.xml) completely offline
     fun convertWordDocxToPdf(context: Context, uri: Uri, outputFile: File, title: String): Int {
         val paragraphs = mutableListOf<String>()
         context.contentResolver.openInputStream(uri)?.use { stream ->
@@ -66,18 +65,12 @@ object OfficeConverter {
                         while (event != XmlPullParser.END_DOCUMENT) {
                             when (event) {
                                 XmlPullParser.START_TAG -> {
-                                    if (parser.name == "p") {
-                                        currentPara = StringBuilder()
-                                    } else if (parser.name == "t") {
-                                        currentPara.append(parser.nextText())
-                                    } else if (parser.name == "tab") {
-                                        currentPara.append("    ")
-                                    }
+                                    if (parser.name == "p") currentPara = StringBuilder()
+                                    else if (parser.name == "t") currentPara.append(parser.nextText())
+                                    else if (parser.name == "tab") currentPara.append("    ")
                                 }
                                 XmlPullParser.END_TAG -> {
-                                    if (parser.name == "p") {
-                                        paragraphs.add(currentPara.toString())
-                                    }
+                                    if (parser.name == "p") paragraphs.add(currentPara.toString())
                                 }
                             }
                             event = parser.next()
@@ -89,19 +82,15 @@ object OfficeConverter {
             }
         } ?: throw IllegalStateException("Unable to open Word file.")
 
-        if (paragraphs.isEmpty()) {
-            paragraphs.add("(No readable text found in Word document.)")
-        }
+        if (paragraphs.isEmpty()) paragraphs.add("(No readable text found in Word document.)")
 
         val doc = PDDocument()
         var page = PDPage(PDRectangle.A4)
         doc.addPage(page)
         var cs = PDPageContentStream(doc, page)
         val margin = 48f
-        val pageHeight = page.mediaBox.height
-        var y = pageHeight - margin
+        var y = page.mediaBox.height - margin
 
-        // Header title
         cs.beginText()
         cs.setFont(PDType1Font.HELVETICA_BOLD, 15f)
         cs.newLineAtOffset(margin, y)
@@ -109,12 +98,8 @@ object OfficeConverter {
         cs.endText()
         y -= 28f
 
-        val fontSize = 11f
-        val leading = 16f
-
         for (para in paragraphs) {
-            val wrapped = wrapText(para, 84)
-            for (line in wrapped) {
+            for (line in wrapText(para, 84)) {
                 if (y < margin + 20f) {
                     cs.close()
                     page = PDPage(PDRectangle.A4)
@@ -124,16 +109,15 @@ object OfficeConverter {
                 }
                 if (line.isNotEmpty()) {
                     cs.beginText()
-                    cs.setFont(PDType1Font.HELVETICA, fontSize)
+                    cs.setFont(PDType1Font.HELVETICA, 11f)
                     cs.newLineAtOffset(margin, y)
                     cs.showText(line)
                     cs.endText()
                 }
-                y -= leading
+                y -= 16f
             }
             y -= 4f
         }
-
         cs.close()
         doc.save(outputFile)
         val count = doc.numberOfPages
@@ -141,18 +125,12 @@ object OfficeConverter {
         return count
     }
 
-    // Extract rows from .xlsx or .csv completely offline and render a clean table PDF
     fun convertExcelOrCsvToPdf(context: Context, uri: Uri, fileName: String, outputFile: File): Int {
-        val rows: List<List<String>> = if (fileName.endsWith(".csv", ignoreCase = true)) {
-            readCsvRows(context, uri)
-        } else {
-            readXlsxRows(context, uri)
-        }
-
+        val rows = if (fileName.endsWith(".csv", ignoreCase = true)) readCsvRows(context, uri) else readXlsxRows(context, uri)
         if (rows.isEmpty()) throw IllegalStateException("Spreadsheet is empty or unsupported format.")
 
         val doc = PDDocument()
-        val rect = PDRectangle(PDRectangle.A4.height, PDRectangle.A4.width) // Landscape A4 for tables
+        val rect = PDRectangle(PDRectangle.A4.height, PDRectangle.A4.width)
         var page = PDPage(rect)
         doc.addPage(page)
         var cs = PDPageContentStream(doc, page)
@@ -164,7 +142,6 @@ object OfficeConverter {
         val rowHeight = 20f
         var y = rect.height - margin
 
-        // Sheet Title
         cs.beginText()
         cs.setFont(PDType1Font.HELVETICA_BOLD, 13f)
         cs.newLineAtOffset(margin, y)
@@ -180,8 +157,6 @@ object OfficeConverter {
                 cs = PDPageContentStream(doc, page)
                 y = rect.height - margin
             }
-
-            // Header or zebra background
             if (rIdx == 0) {
                 cs.setNonStrokingColor(230, 230, 230)
                 cs.addRect(margin, y - rowHeight + 4f, tableWidth, rowHeight)
@@ -192,26 +167,22 @@ object OfficeConverter {
                 cs.fill()
             }
             cs.setNonStrokingColor(0, 0, 0)
-
-            // Row border
             cs.setStrokingColor(190, 190, 190)
             cs.setLineWidth(0.5f)
             cs.addRect(margin, y - rowHeight + 4f, tableWidth, rowHeight)
             cs.stroke()
 
-            val maxCharsPerCell = (colWidth / 5.4f).toInt().coerceAtLeast(6)
+            val maxChars = (colWidth / 5.4f).toInt().coerceAtLeast(6)
             for (c in 0 until maxCols) {
-                val cellText = sanitize(row.getOrNull(c) ?: "").take(maxCharsPerCell)
-                val x = margin + c * colWidth + 4f
+                val cell = sanitize(row.getOrNull(c) ?: "").take(maxChars)
                 cs.beginText()
                 cs.setFont(if (rIdx == 0) PDType1Font.HELVETICA_BOLD else PDType1Font.HELVETICA, 9f)
-                cs.newLineAtOffset(x, y - 10f)
-                cs.showText(cellText)
+                cs.newLineAtOffset(margin + c * colWidth + 4f, y - 10f)
+                cs.showText(cell)
                 cs.endText()
             }
             y -= rowHeight
         }
-
         cs.close()
         doc.save(outputFile)
         val pages = doc.numberOfPages
@@ -224,9 +195,7 @@ object OfficeConverter {
         context.contentResolver.openInputStream(uri)?.use { stream ->
             BufferedReader(InputStreamReader(stream)).useLines { seq ->
                 seq.forEach { line ->
-                    if (line.isNotBlank()) {
-                        rows.add(line.split(",").map { it.trim().removeSurrounding("\"") })
-                    }
+                    if (line.isNotBlank()) rows.add(line.split(",").map { it.trim().removeSurrounding("\"") })
                 }
             }
         }
@@ -236,7 +205,6 @@ object OfficeConverter {
     private fun readXlsxRows(context: Context, uri: Uri): List<List<String>> {
         val sharedStrings = mutableListOf<String>()
         var sheetXmlBytes: ByteArray? = null
-
         context.contentResolver.openInputStream(uri)?.use { stream ->
             ZipInputStream(stream).use { zis ->
                 var entry = zis.nextEntry
@@ -252,18 +220,11 @@ object OfficeConverter {
                             while (ev != XmlPullParser.END_DOCUMENT) {
                                 when (ev) {
                                     XmlPullParser.START_TAG -> {
-                                        if (parser.name == "si") {
-                                            sb = StringBuilder()
-                                            inSi = true
-                                        } else if (inSi && parser.name == "t") {
-                                            sb.append(parser.nextText())
-                                        }
+                                        if (parser.name == "si") { sb = StringBuilder(); inSi = true }
+                                        else if (inSi && parser.name == "t") sb.append(parser.nextText())
                                     }
                                     XmlPullParser.END_TAG -> {
-                                        if (parser.name == "si") {
-                                            sharedStrings.add(sb.toString())
-                                            inSi = false
-                                        }
+                                        if (parser.name == "si") { sharedStrings.add(sb.toString()); inSi = false }
                                     }
                                 }
                                 ev = parser.next()
@@ -277,7 +238,6 @@ object OfficeConverter {
                 }
             }
         }
-
         val sheetBytes = sheetXmlBytes ?: return emptyList()
         val rows = mutableListOf<List<String>>()
         val parser = Xml.newPullParser()
@@ -287,29 +247,16 @@ object OfficeConverter {
         var cellType: String? = null
         while (ev != XmlPullParser.END_DOCUMENT) {
             when (ev) {
-                XmlPullParser.START_TAG -> {
-                    when (parser.name) {
-                        "row" -> currentRow = mutableListOf()
-                        "c" -> cellType = parser.getAttributeValue(null, "t")
-                        "v" -> {
-                            val raw = parser.nextText()
-                            val value = if (cellType == "s") {
-                                raw.toIntOrNull()?.let { sharedStrings.getOrNull(it) } ?: raw
-                            } else raw
-                            currentRow.add(value)
-                        }
-                        "t" -> {
-                            if (cellType == "inlineStr") {
-                                currentRow.add(parser.nextText())
-                            }
-                        }
+                XmlPullParser.START_TAG -> when (parser.name) {
+                    "row" -> currentRow = mutableListOf()
+                    "c" -> cellType = parser.getAttributeValue(null, "t")
+                    "v" -> {
+                        val raw = parser.nextText()
+                        currentRow.add(if (cellType == "s") raw.toIntOrNull()?.let { sharedStrings.getOrNull(it) } ?: raw else raw)
                     }
+                    "t" -> if (cellType == "inlineStr") currentRow.add(parser.nextText())
                 }
-                XmlPullParser.END_TAG -> {
-                    if (parser.name == "row" && currentRow.isNotEmpty()) {
-                        rows.add(currentRow)
-                    }
-                }
+                XmlPullParser.END_TAG -> if (parser.name == "row" && currentRow.isNotEmpty()) rows.add(currentRow)
             }
             ev = parser.next()
         }

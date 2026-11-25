@@ -12,8 +12,8 @@ android {
         applicationId = "com.aurapdf.editor"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.0.0"
+        versionCode = 3
+        versionName = "3.0.0"
     }
 
     signingConfigs {
@@ -73,7 +73,7 @@ dependencies {
     implementation("androidx.compose.animation:animation")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
-    // 100% Offline PDF Engine (Create, Edit, Merge, Split, Links, Encrypt, Watermark, Sign)
+    // 100% Offline PDF Engine (Create, Edit, Pages, Links, Encrypt, Watermark, Sign, Redact)
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
 
     // 100% Offline OCR (Google ML Kit on-device text recognition)

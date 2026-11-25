@@ -20,28 +20,21 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CallSplit
-import androidx.compose.material.icons.filled.Create
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.Link
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MergeType
 import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.TableChart
-import androidx.compose.material.icons.filled.WaterDrop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -49,15 +42,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aurapdf.editor.data.PdfStorage
+import com.aurapdf.editor.engine.OfficeConverter
+import com.aurapdf.editor.engine.PdfEngine
 import com.aurapdf.editor.theme.AuraPdfTheme
 import com.aurapdf.editor.theme.PdfThemeMode
-import com.aurapdf.editor.ui.CreatorScreen
-import com.aurapdf.editor.ui.LinkManagerScreen
-import com.aurapdf.editor.ui.OcrScreen
-import com.aurapdf.editor.ui.OfficeToPdfScreen
-import com.aurapdf.editor.ui.QuickUtilityScreen
-import com.aurapdf.editor.ui.ReaderScreen
-import com.aurapdf.editor.ui.SignatureScreen
+import com.aurapdf.editor.ui.EditorWorkspaceScreen
 import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -66,21 +55,8 @@ import java.io.File
 
 sealed class AppRoute {
     data object Home : AppRoute()
-    data class Reader(val file: File) : AppRoute()
-    data object Creator : AppRoute()
-    data object OfficeToPdf : AppRoute()
-    data object LinkManager : AppRoute()
-    data object Signature : AppRoute()
-    data object Ocr : AppRoute()
-    data class Utility(val toolType: String) : AppRoute()
+    data class Workspace(val file: File) : AppRoute()
 }
-
-data class ToolItem(
-    val title: String,
-    val subtitle: String,
-    val icon: ImageVector,
-    val route: AppRoute
-)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,15 +78,15 @@ fun AuraPdfRoot() {
 
     var themeMode by remember { mutableStateOf(storage.themeMode) }
     var recentPdfs by remember { mutableStateOf(storage.listRecentPdfs()) }
+    var homeBanner by remember { mutableStateOf<String?>(null) }
+    var showNewBlankDialog by remember { mutableStateOf(false) }
 
-    // Proper navigation back stack so pressing Back ALWAYS returns to the previous page!
     val backStack = remember { mutableStateListOf<AppRoute>(AppRoute.Home) }
     val currentRoute = backStack.last()
 
-    fun navigateTo(route: AppRoute) {
-        if (backStack.lastOrNull() != route) {
-            backStack.add(route)
-        }
+    fun openWorkspace(file: File) {
+        recentPdfs = storage.listRecentPdfs()
+        backStack.add(AppRoute.Workspace(file))
     }
 
     fun navigateBack() {
@@ -120,7 +96,6 @@ fun AuraPdfRoot() {
         }
     }
 
-    // Intercept system Back button: close drawer first, otherwise pop back stack to last page
     BackHandler(enabled = drawerState.isOpen || backStack.size > 1) {
         if (drawerState.isOpen) {
             scope.launch { drawerState.close() }
@@ -132,32 +107,114 @@ fun AuraPdfRoot() {
     val openPdfLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
             scope.launch {
-                val imported = withContext(Dispatchers.IO) { storage.importPdfFromUri(uri) }
-                recentPdfs = storage.listRecentPdfs()
-                navigateTo(AppRoute.Reader(imported))
+                val f = withContext(Dispatchers.IO) { storage.importPdfFromUri(uri) }
+                openWorkspace(f)
             }
         }
     }
 
-    val allTools = remember {
-        listOf(
-            ToolItem("Create Blank PDF", "Text, JPG/PNG & Links", Icons.Default.Add, AppRoute.Creator),
-            ToolItem("Word & Excel to PDF", ".docx, .xlsx & .csv", Icons.Default.TableChart, AppRoute.OfficeToPdf),
-            ToolItem("PDF Link Manager", "Add or Remove Links", Icons.Default.Link, AppRoute.LinkManager),
-            ToolItem("Images to PDF", "JPG / PNG to PDF", Icons.Default.Image, AppRoute.Utility("img2pdf")),
-            ToolItem("Merge PDFs", "Combine multiple PDFs", Icons.Default.MergeType, AppRoute.Utility("merge")),
-            ToolItem("Split PDF", "Extract page range", Icons.Default.CallSplit, AppRoute.Utility("split")),
-            ToolItem("Sign PDF", "Draw & stamp signature", Icons.Default.Create, AppRoute.Signature),
-            ToolItem("Offline OCR", "Scan text from PDF", Icons.Default.DocumentScanner, AppRoute.Ocr),
-            ToolItem("Rotate Pages", "Rotate 90 degrees", Icons.Default.RotateRight, AppRoute.Utility("rotate")),
-            ToolItem("Delete Page", "Remove specific page", Icons.Default.DeleteOutline, AppRoute.Utility("delete_page")),
-            ToolItem("Watermark", "Stamp custom text", Icons.Default.WaterDrop, AppRoute.Utility("watermark")),
-            ToolItem("Lock PDF", "Add password security", Icons.Default.Lock, AppRoute.Utility("lock")),
-            ToolItem("Unlock PDF", "Remove PDF password", Icons.Default.LockOpen, AppRoute.Utility("unlock"))
-        )
+    val officeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                homeBanner = "Converting Word/Excel to PDF..."
+                try {
+                    val name = storage.getDisplayName(uri)
+                    val out = storage.newOutputFile(name.substringBeforeLast("."))
+                    withContext(Dispatchers.IO) {
+                        when {
+                            name.endsWith(".docx", ignoreCase = true) ->
+                                OfficeConverter.convertWordDocxToPdf(context, uri, out, name)
+                            name.endsWith(".xlsx", ignoreCase = true) || name.endsWith(".csv", ignoreCase = true) ->
+                                OfficeConverter.convertExcelOrCsvToPdf(context, uri, name, out)
+                            else -> throw IllegalStateException("Select a .docx, .xlsx, or .csv file.")
+                        }
+                    }
+                    homeBanner = null
+                    openWorkspace(out)
+                } catch (e: Exception) {
+                    homeBanner = "Convert failed: ${e.message}"
+                }
+            }
+        }
+    }
+
+    val imagesLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) {
+            scope.launch {
+                homeBanner = "Creating PDF from ${uris.size} image(s)..."
+                val out = storage.newOutputFile("Images_PDF")
+                withContext(Dispatchers.IO) { PdfEngine.imagesToPdf(context, uris, out) }
+                homeBanner = null
+                openWorkspace(out)
+            }
+        }
+    }
+
+    val mergeLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.size >= 2) {
+            scope.launch {
+                homeBanner = "Merging ${uris.size} PDFs..."
+                val files = withContext(Dispatchers.IO) { uris.map { storage.importPdfFromUri(it) } }
+                val out = storage.newOutputFile("Merged_PDF")
+                withContext(Dispatchers.IO) {
+                    files.first().copyTo(out, overwrite = true)
+                    for (i in 1 until files.size) {
+                        PdfEngine.appendPdfIntoCurrent(out, files[i])
+                    }
+                }
+                homeBanner = null
+                openWorkspace(out)
+            }
+        } else if (uris.isNotEmpty()) {
+            homeBanner = "Select at least 2 PDFs to merge."
+        }
     }
 
     AuraPdfTheme(mode = themeMode) {
+        if (showNewBlankDialog) {
+            var docName by remember { mutableStateOf("Untitled_Document") }
+            var pageSize by remember { mutableStateOf("A4") }
+            var landscape by remember { mutableStateOf(false) }
+
+            AlertDialog(
+                onDismissRequest = { showNewBlankDialog = false },
+                title = { Text("Create New Blank PDF") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = docName,
+                            onValueChange = { docName = it },
+                            label = { Text("Document Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("A4", "Letter", "Legal").forEach { sz ->
+                                FilterChip(selected = pageSize == sz, onClick = { pageSize = sz }, label = { Text(sz, fontSize = 12.sp) })
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text("Landscape Page", fontSize = 13.sp, modifier = Modifier.weight(1f))
+                            Switch(checked = landscape, onCheckedChange = { landscape = it })
+                        }
+                    }
+                },
+                confirmButton = {
+                    Button(onClick = {
+                        showNewBlankDialog = false
+                        scope.launch {
+                            val out = storage.newOutputFile(docName)
+                            withContext(Dispatchers.IO) { PdfEngine.createBlankPdf(out, pageSize, landscape) }
+                            openWorkspace(out)
+                        }
+                    }) { Text("Create & Open Editor") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showNewBlankDialog = false }) { Text("Cancel") }
+                }
+            )
+        }
+
         ModalNavigationDrawer(
             drawerState = drawerState,
             gesturesEnabled = currentRoute is AppRoute.Home,
@@ -167,7 +224,7 @@ fun AuraPdfRoot() {
                     drawerContentColor = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.width(290.dp)
                 ) {
-                    LazyColumn(
+                    Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .statusBarsPadding()
@@ -175,58 +232,50 @@ fun AuraPdfRoot() {
                             .padding(14.dp),
                         verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        item {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 10.dp)
-                            ) {
-                                Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(24.dp))
-                                Spacer(Modifier.width(10.dp))
-                                Text("Aura PDF Editor", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 10.dp)
+                        ) {
+                            Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(24.dp))
+                            Spacer(Modifier.width(10.dp))
+                            Text("Aura PDF Editor", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                        }
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                        Spacer(Modifier.height(6.dp))
+
+                        DrawerActionRow(Icons.Default.Add, "New Blank PDF (Full Editor)") {
+                            scope.launch { drawerState.close() }
+                            showNewBlankDialog = true
+                        }
+                        DrawerActionRow(Icons.Default.FolderOpen, "Open PDF to Edit") {
+                            scope.launch { drawerState.close() }
+                            openPdfLauncher.launch(arrayOf("application/pdf"))
+                        }
+                        DrawerActionRow(Icons.Default.TableChart, "Word & Excel to PDF") {
+                            scope.launch { drawerState.close() }
+                            officeLauncher.launch(arrayOf("*/*"))
+                        }
+                        DrawerActionRow(Icons.Default.Image, "Images (JPG/PNG) to PDF") {
+                            scope.launch { drawerState.close() }
+                            imagesLauncher.launch(arrayOf("image/*"))
+                        }
+                        DrawerActionRow(Icons.Default.MergeType, "Merge Multiple PDFs") {
+                            scope.launch { drawerState.close() }
+                            mergeLauncher.launch(arrayOf("application/pdf"))
+                        }
+
+                        Spacer(Modifier.weight(1f))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                        Spacer(Modifier.height(6.dp))
+
+                        DrawerActionRow(Icons.Default.DarkMode, "Theme: ${themeMode.label}") {
+                            val next = when (themeMode) {
+                                PdfThemeMode.AMOLED -> PdfThemeMode.DARK
+                                PdfThemeMode.DARK -> PdfThemeMode.LIGHT
+                                PdfThemeMode.LIGHT -> PdfThemeMode.AMOLED
                             }
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                            Spacer(Modifier.height(6.dp))
-                        }
-
-                        item {
-                            DrawerMenuRow(
-                                icon = Icons.Default.FolderOpen,
-                                label = "Open PDF from Storage",
-                                onClick = {
-                                    scope.launch { drawerState.close() }
-                                    openPdfLauncher.launch(arrayOf("application/pdf"))
-                                }
-                            )
-                        }
-
-                        items(allTools) { tool ->
-                            DrawerMenuRow(
-                                icon = tool.icon,
-                                label = tool.title,
-                                onClick = {
-                                    scope.launch { drawerState.close() }
-                                    navigateTo(tool.route)
-                                }
-                            )
-                        }
-
-                        item {
-                            Spacer(Modifier.height(8.dp))
-                            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
-                            Spacer(Modifier.height(8.dp))
-                            DrawerMenuRow(
-                                icon = Icons.Default.DarkMode,
-                                label = "Theme: ${themeMode.label}",
-                                onClick = {
-                                    val next = when (themeMode) {
-                                        PdfThemeMode.AMOLED -> PdfThemeMode.DARK
-                                        PdfThemeMode.DARK -> PdfThemeMode.LIGHT
-                                        PdfThemeMode.LIGHT -> PdfThemeMode.AMOLED
-                                    }
-                                    themeMode = next
-                                    storage.themeMode = next
-                                }
-                            )
+                            themeMode = next
+                            storage.themeMode = next
                         }
                     }
                 }
@@ -234,8 +283,8 @@ fun AuraPdfRoot() {
         ) {
             AnimatedContent(
                 targetState = currentRoute,
-                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(150)) },
-                label = "ScreenNav"
+                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(140)) },
+                label = "AuraNav"
             ) { route ->
                 when (route) {
                     is AppRoute.Home -> {
@@ -256,8 +305,8 @@ fun AuraPdfRoot() {
                                         Text("Aura PDF Editor", fontWeight = FontWeight.Bold, fontSize = 20.sp)
                                     },
                                     actions = {
-                                        IconButton(onClick = { openPdfLauncher.launch(arrayOf("application/pdf")) }) {
-                                            Icon(Icons.Default.FolderOpen, contentDescription = "Open PDF")
+                                        IconButton(onClick = { showNewBlankDialog = true }) {
+                                            Icon(Icons.Default.Add, contentDescription = "New Blank PDF")
                                         }
                                     }
                                 )
@@ -268,12 +317,21 @@ fun AuraPdfRoot() {
                                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
                                 verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                // 1. DIRECTLY SHOW RECENT PDFs FIRST UNDER "Aura PDF Editor"
+                                if (homeBanner != null) {
+                                    item {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = MaterialTheme.colorScheme.surfaceVariant,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(homeBanner!!, fontSize = 12.sp, modifier = Modifier.padding(12.dp))
+                                        }
+                                    }
+                                }
+
+                                // 1. DIRECTLY SHOW RECENT PDFs UNDER "Aura PDF Editor"
                                 item {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                                         Text(
                                             "Recent PDFs (${recentPdfs.size})",
                                             fontWeight = FontWeight.SemiBold,
@@ -281,7 +339,7 @@ fun AuraPdfRoot() {
                                             modifier = Modifier.weight(1f)
                                         )
                                         TextButton(onClick = { openPdfLauncher.launch(arrayOf("application/pdf")) }) {
-                                            Text("Open File", fontSize = 13.sp)
+                                            Text("Open PDF", fontSize = 13.sp)
                                         }
                                     }
                                 }
@@ -294,18 +352,15 @@ fun AuraPdfRoot() {
                                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .clickable { openPdfLauncher.launch(arrayOf("application/pdf")) }
+                                                .clickable { showNewBlankDialog = true }
                                         ) {
-                                            Row(
-                                                modifier = Modifier.padding(16.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
+                                            Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                                                 Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(28.dp))
                                                 Spacer(Modifier.width(12.dp))
                                                 Column {
                                                     Text("No recent PDFs yet", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                                                     Text(
-                                                        "Tap here to open a PDF or create a new one below.",
+                                                        "Tap to create a Blank PDF or open any PDF — all Acrobat-style tools work inside one workspace.",
                                                         fontSize = 12.sp,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )
@@ -314,14 +369,14 @@ fun AuraPdfRoot() {
                                         }
                                     }
                                 } else {
-                                    items(recentPdfs.take(6), key = { it.file.absolutePath }) { item ->
+                                    items(recentPdfs, key = { it.file.absolutePath }) { item ->
                                         Surface(
                                             shape = RoundedCornerShape(14.dp),
                                             color = MaterialTheme.colorScheme.surface,
                                             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                                             modifier = Modifier
                                                 .fillMaxWidth()
-                                                .clickable { navigateTo(AppRoute.Reader(item.file)) }
+                                                .clickable { openWorkspace(item.file) }
                                         ) {
                                             Row(
                                                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
@@ -331,9 +386,9 @@ fun AuraPdfRoot() {
                                                 Spacer(Modifier.width(12.dp))
                                                 Column(modifier = Modifier.weight(1f)) {
                                                     Text(item.name, fontWeight = FontWeight.Medium, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                    Text("${item.sizeKb} KB", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                    Text("${item.sizeKb} KB • Tap to Edit", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                                 }
-                                                IconButton(onClick = { storage.sharePdf(item.file) }, modifier = Modifier.size(32.dp)) {
+                                                IconButton(onClick = { storage.shareFile(item.file) }, modifier = Modifier.size(32.dp)) {
                                                     Icon(Icons.Default.Share, contentDescription = "Share", modifier = Modifier.size(18.dp))
                                                 }
                                                 IconButton(
@@ -350,104 +405,60 @@ fun AuraPdfRoot() {
                                     }
                                 }
 
-                                // 2. AFTER RECENT FILES, ALL FEATURES APPEAR BELOW
+                                // 2. CREATE & CONVERT TOOLS AFTER RECENT FILES
                                 item {
                                     Spacer(Modifier.height(6.dp))
-                                    Text(
-                                        "All PDF Tools",
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontSize = 15.sp
-                                    )
+                                    Text("Create & Convert", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
                                 }
 
-                                val paired = allTools.chunked(2)
-                                items(paired) { rowTools ->
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                                    ) {
-                                        rowTools.forEach { tool ->
-                                            Surface(
-                                                shape = RoundedCornerShape(16.dp),
-                                                color = MaterialTheme.colorScheme.surface,
-                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-                                                modifier = Modifier
-                                                    .weight(1f)
-                                                    .clickable { navigateTo(tool.route) }
-                                            ) {
-                                                Column(modifier = Modifier.padding(14.dp)) {
-                                                    Icon(tool.icon, contentDescription = null, modifier = Modifier.size(24.dp))
-                                                    Spacer(Modifier.height(10.dp))
-                                                    Text(tool.title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                    Text(tool.subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                                }
-                                            }
-                                        }
-                                        if (rowTools.size == 1) {
-                                            Spacer(Modifier.weight(1f))
-                                        }
+                                item {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                        HomeFeatureCard(
+                                            title = "New Blank PDF",
+                                            subtitle = "Full Editor Workspace",
+                                            icon = Icons.Default.Add,
+                                            modifier = Modifier.weight(1f),
+                                            onClick = { showNewBlankDialog = true }
+                                        )
+                                        HomeFeatureCard(
+                                            title = "Word / Excel",
+                                            subtitle = ".docx, .xlsx, .csv",
+                                            icon = Icons.Default.TableChart,
+                                            modifier = Modifier.weight(1f),
+                                            onClick = { officeLauncher.launch(arrayOf("*/*")) }
+                                        )
                                     }
                                 }
+
+                                item {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                                        HomeFeatureCard(
+                                            title = "Images to PDF",
+                                            subtitle = "JPG / PNG to Editor",
+                                            icon = Icons.Default.Image,
+                                            modifier = Modifier.weight(1f),
+                                            onClick = { imagesLauncher.launch(arrayOf("image/*")) }
+                                        )
+                                        HomeFeatureCard(
+                                            title = "Merge PDFs",
+                                            subtitle = "Combine & Edit",
+                                            icon = Icons.Default.MergeType,
+                                            modifier = Modifier.weight(1f),
+                                            onClick = { mergeLauncher.launch(arrayOf("application/pdf")) }
+                                        )
+                                    }
+                                }
+
                                 item { Spacer(Modifier.height(24.dp)) }
                             }
                         }
                     }
 
-                    is AppRoute.Reader -> ReaderScreen(
+                    is AppRoute.Workspace -> EditorWorkspaceScreen(
                         file = route.file,
                         storage = storage,
-                        onBack = { navigateBack() }
-                    )
-
-                    is AppRoute.Creator -> CreatorScreen(
-                        storage = storage,
                         onBack = { navigateBack() },
-                        onPdfCreated = { created ->
-                            recentPdfs = storage.listRecentPdfs()
-                            navigateTo(AppRoute.Reader(created))
-                        }
-                    )
-
-                    is AppRoute.OfficeToPdf -> OfficeToPdfScreen(
-                        storage = storage,
-                        onBack = { navigateBack() },
-                        onPdfReady = { created ->
-                            recentPdfs = storage.listRecentPdfs()
-                            navigateTo(AppRoute.Reader(created))
-                        }
-                    )
-
-                    is AppRoute.LinkManager -> LinkManagerScreen(
-                        storage = storage,
-                        onBack = { navigateBack() },
-                        onPdfReady = { created ->
-                            recentPdfs = storage.listRecentPdfs()
-                            navigateTo(AppRoute.Reader(created))
-                        }
-                    )
-
-                    is AppRoute.Signature -> SignatureScreen(
-                        storage = storage,
-                        onBack = { navigateBack() },
-                        onPdfReady = { created ->
-                            recentPdfs = storage.listRecentPdfs()
-                            navigateTo(AppRoute.Reader(created))
-                        }
-                    )
-
-                    is AppRoute.Ocr -> OcrScreen(
-                        storage = storage,
-                        onBack = { navigateBack() }
-                    )
-
-                    is AppRoute.Utility -> QuickUtilityScreen(
-                        toolType = route.toolType,
-                        storage = storage,
-                        onBack = { navigateBack() },
-                        onPdfReady = { created ->
-                            recentPdfs = storage.listRecentPdfs()
-                            navigateTo(AppRoute.Reader(created))
-                        }
+                        onOpenNewFile = { newFile -> openWorkspace(newFile) }
                     )
                 }
             }
@@ -456,13 +467,34 @@ fun AuraPdfRoot() {
 }
 
 @Composable
-private fun DrawerMenuRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun HomeFeatureCard(
+    title: String,
+    subtitle: String,
+    icon: ImageVector,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        modifier = modifier.clickable(onClick = onClick)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.height(10.dp))
+            Text(title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+    }
+}
+
+@Composable
+private fun DrawerActionRow(icon: ImageVector, label: String, onClick: () -> Unit) {
     Surface(
         shape = RoundedCornerShape(12.dp),
-        color = androidx.compose.ui.graphics.Color.Transparent,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
+        color = Color.Transparent,
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)
     ) {
         Row(
             modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),

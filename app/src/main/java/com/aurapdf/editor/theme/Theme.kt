@@ -9,8 +9,8 @@ import androidx.compose.ui.graphics.Color
 
 enum class PdfThemeMode(val id: String, val label: String) {
     AMOLED("amoled", "AMOLED Black"),
-    DARK("dark", "Dark"),
-    LIGHT("light", "Light");
+    DARK("dark", "Studio Dark"),
+    LIGHT("light", "Clean Light");
 
     companion object {
         fun fromId(id: String?): PdfThemeMode = entries.find { it.id == id } ?: AMOLED
@@ -24,11 +24,11 @@ private val AmoledScheme = darkColorScheme(
     onSecondary = Color.Black,
     background = Color.Black,
     onBackground = Color(0xFFF5F5F5),
-    surface = Color(0xFF0C0C0C),
+    surface = Color(0xFF0E0E0E),
     onSurface = Color(0xFFF5F5F5),
-    surfaceVariant = Color(0xFF181818),
+    surfaceVariant = Color(0xFF1A1A1A),
     onSurfaceVariant = Color(0xFF9E9E9E),
-    outline = Color(0xFF282828)
+    outline = Color(0xFF2B2B2B)
 )
 
 private val DarkScheme = darkColorScheme(
@@ -36,13 +36,13 @@ private val DarkScheme = darkColorScheme(
     onPrimary = Color(0xFF121212),
     secondary = Color(0xFFB0B0B0),
     onSecondary = Color(0xFF121212),
-    background = Color(0xFF121316),
+    background = Color(0xFF141519),
     onBackground = Color(0xFFECECEC),
-    surface = Color(0xFF1B1D22),
+    surface = Color(0xFF1C1E24),
     onSurface = Color(0xFFECECEC),
-    surfaceVariant = Color(0xFF252830),
+    surfaceVariant = Color(0xFF272A33),
     onSurfaceVariant = Color(0xFFA0A4AC),
-    outline = Color(0xFF333742)
+    outline = Color(0xFF343844)
 )
 
 private val LightScheme = lightColorScheme(
@@ -50,13 +50,13 @@ private val LightScheme = lightColorScheme(
     onPrimary = Color.White,
     secondary = Color(0xFF555555),
     onSecondary = Color.White,
-    background = Color(0xFFF8F9FA),
+    background = Color(0xFFF6F7F9),
     onBackground = Color(0xFF111111),
     surface = Color.White,
     onSurface = Color(0xFF111111),
-    surfaceVariant = Color(0xFFF0F1F3),
+    surfaceVariant = Color(0xFFECEEF2),
     onSurfaceVariant = Color(0xFF5F6368),
-    outline = Color(0xFFDEE2E6)
+    outline = Color(0xFFDADDE3)
 )
 
 fun schemeFor(mode: PdfThemeMode): ColorScheme = when (mode) {
