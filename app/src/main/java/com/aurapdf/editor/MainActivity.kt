@@ -1,55 +1,454 @@
 package com.aurapdf.editor
 
-import android.app.Activity
-import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.Surface
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CallSplit
+import androidx.compose.material.icons.filled.Create
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MergeType
+import androidx.compose.material.icons.filled.PictureAsPdf
+import androidx.compose.material.icons.filled.RotateRight
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material.icons.filled.WaterDrop
+import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import com.aurapdf.editor.engine.OcrEngine
-import com.aurapdf.editor.engine.PdfEngine
-import com.aurapdf.editor.ui.components.*
-import com.aurapdf.editor.ui.screens.*
-import com.aurapdf.editor.ui.theme.AuraPdfTheme
-import com.aurapdf.editor.util.FileUtils
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.aurapdf.editor.data.PdfStorage
+import com.aurapdf.editor.theme.AuraPdfTheme
+import com.aurapdf.editor.theme.PdfThemeMode
+import com.aurapdf.editor.ui.CreatorScreen
+import com.aurapdf.editor.ui.LinkManagerScreen
+import com.aurapdf.editor.ui.OcrScreen
+import com.aurapdf.editor.ui.OfficeToPdfScreen
+import com.aurapdf.editor.ui.QuickUtilityScreen
+import com.aurapdf.editor.ui.ReaderScreen
+import com.aurapdf.editor.ui.SignatureScreen
+import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 
-private sealed interface AppScreen {
-    data object Home : AppScreen
-    data class Viewer(val file: File) : AppScreen
-    data class Organizer(val file: File) : AppScreen
-    data class Annotate(val file: File, val pageIndex: Int) : AppScreen
+sealed class AppRoute {
+    data object Home : AppRoute()
+    data class Reader(val file: File) : AppRoute()
+    data object Creator : AppRoute()
+    data object OfficeToPdf : AppRoute()
+    data object LinkManager : AppRoute()
+    data object Signature : AppRoute()
+    data object Ocr : AppRoute()
+    data class Utility(val toolType: String) : AppRoute()
 }
 
-private enum class PendingHomeAction { NONE, SPLIT, COMPRESS, LOCK, OCR }
+data class ToolItem(
+    val title: String,
+    val subtitle: String,
+    val icon: ImageVector,
+    val route: AppRoute
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        PdfEngine.init(this)
-
-        val incomingUri: Uri? = if (intent?.action == Intent.ACTION_VIEW) intent.data else null
-
+        PDFBoxResourceLoader.init(applicationContext)
         setContent {
-            AuraPdfTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    AuraPdfRoot(activity = this, initialUri = incomingUri)
+            AuraPdfRoot()
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AuraPdfRoot() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val storage = remember { PdfStorage(context) }
+    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+
+    var themeMode by remember { mutableStateOf(storage.themeMode) }
+    var recentPdfs by remember { mutableStateOf(storage.listRecentPdfs()) }
+
+    // Proper navigation back stack so pressing Back ALWAYS returns to the previous page!
+    val backStack = remember { mutableStateListOf<AppRoute>(AppRoute.Home) }
+    val currentRoute = backStack.last()
+
+    fun navigateTo(route: AppRoute) {
+        if (backStack.lastOrNull() != route) {
+            backStack.add(route)
+        }
+    }
+
+    fun navigateBack() {
+        if (backStack.size > 1) {
+            backStack.removeAt(backStack.lastIndex)
+            recentPdfs = storage.listRecentPdfs()
+        }
+    }
+
+    // Intercept system Back button: close drawer first, otherwise pop back stack to last page
+    BackHandler(enabled = drawerState.isOpen || backStack.size > 1) {
+        if (drawerState.isOpen) {
+            scope.launch { drawerState.close() }
+        } else {
+            navigateBack()
+        }
+    }
+
+    val openPdfLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                val imported = withContext(Dispatchers.IO) { storage.importPdfFromUri(uri) }
+                recentPdfs = storage.listRecentPdfs()
+                navigateTo(AppRoute.Reader(imported))
+            }
+        }
+    }
+
+    val allTools = remember {
+        listOf(
+            ToolItem("Create Blank PDF", "Text, JPG/PNG & Links", Icons.Default.Add, AppRoute.Creator),
+            ToolItem("Word & Excel to PDF", ".docx, .xlsx & .csv", Icons.Default.TableChart, AppRoute.OfficeToPdf),
+            ToolItem("PDF Link Manager", "Add or Remove Links", Icons.Default.Link, AppRoute.LinkManager),
+            ToolItem("Images to PDF", "JPG / PNG to PDF", Icons.Default.Image, AppRoute.Utility("img2pdf")),
+            ToolItem("Merge PDFs", "Combine multiple PDFs", Icons.Default.MergeType, AppRoute.Utility("merge")),
+            ToolItem("Split PDF", "Extract page range", Icons.Default.CallSplit, AppRoute.Utility("split")),
+            ToolItem("Sign PDF", "Draw & stamp signature", Icons.Default.Create, AppRoute.Signature),
+            ToolItem("Offline OCR", "Scan text from PDF", Icons.Default.DocumentScanner, AppRoute.Ocr),
+            ToolItem("Rotate Pages", "Rotate 90 degrees", Icons.Default.RotateRight, AppRoute.Utility("rotate")),
+            ToolItem("Delete Page", "Remove specific page", Icons.Default.DeleteOutline, AppRoute.Utility("delete_page")),
+            ToolItem("Watermark", "Stamp custom text", Icons.Default.WaterDrop, AppRoute.Utility("watermark")),
+            ToolItem("Lock PDF", "Add password security", Icons.Default.Lock, AppRoute.Utility("lock")),
+            ToolItem("Unlock PDF", "Remove PDF password", Icons.Default.LockOpen, AppRoute.Utility("unlock"))
+        )
+    }
+
+    AuraPdfTheme(mode = themeMode) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            gesturesEnabled = currentRoute is AppRoute.Home,
+            drawerContent = {
+                ModalDrawerSheet(
+                    drawerContainerColor = MaterialTheme.colorScheme.surface,
+                    drawerContentColor = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.width(290.dp)
+                ) {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .statusBarsPadding()
+                            .navigationBarsPadding()
+                            .padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        item {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 10.dp)
+                            ) {
+                                Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(24.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Text("Aura PDF Editor", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                            }
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                            Spacer(Modifier.height(6.dp))
+                        }
+
+                        item {
+                            DrawerMenuRow(
+                                icon = Icons.Default.FolderOpen,
+                                label = "Open PDF from Storage",
+                                onClick = {
+                                    scope.launch { drawerState.close() }
+                                    openPdfLauncher.launch(arrayOf("application/pdf"))
+                                }
+                            )
+                        }
+
+                        items(allTools) { tool ->
+                            DrawerMenuRow(
+                                icon = tool.icon,
+                                label = tool.title,
+                                onClick = {
+                                    scope.launch { drawerState.close() }
+                                    navigateTo(tool.route)
+                                }
+                            )
+                        }
+
+                        item {
+                            Spacer(Modifier.height(8.dp))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline)
+                            Spacer(Modifier.height(8.dp))
+                            DrawerMenuRow(
+                                icon = Icons.Default.DarkMode,
+                                label = "Theme: ${themeMode.label}",
+                                onClick = {
+                                    val next = when (themeMode) {
+                                        PdfThemeMode.AMOLED -> PdfThemeMode.DARK
+                                        PdfThemeMode.DARK -> PdfThemeMode.LIGHT
+                                        PdfThemeMode.LIGHT -> PdfThemeMode.AMOLED
+                                    }
+                                    themeMode = next
+                                    storage.themeMode = next
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        ) {
+            AnimatedContent(
+                targetState = currentRoute,
+                transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(150)) },
+                label = "ScreenNav"
+            ) { route ->
+                when (route) {
+                    is AppRoute.Home -> {
+                        Scaffold(
+                            containerColor = MaterialTheme.colorScheme.background,
+                            topBar = {
+                                TopAppBar(
+                                    colors = TopAppBarDefaults.topAppBarColors(
+                                        containerColor = MaterialTheme.colorScheme.background,
+                                        titleContentColor = MaterialTheme.colorScheme.onBackground
+                                    ),
+                                    navigationIcon = {
+                                        IconButton(onClick = { scope.launch { drawerState.open() } }) {
+                                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                                        }
+                                    },
+                                    title = {
+                                        Text("Aura PDF Editor", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                                    },
+                                    actions = {
+                                        IconButton(onClick = { openPdfLauncher.launch(arrayOf("application/pdf")) }) {
+                                            Icon(Icons.Default.FolderOpen, contentDescription = "Open PDF")
+                                        }
+                                    }
+                                )
+                            }
+                        ) { padding ->
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize().padding(padding),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 10.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                // 1. DIRECTLY SHOW RECENT PDFs FIRST UNDER "Aura PDF Editor"
+                                item {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            "Recent PDFs (${recentPdfs.size})",
+                                            fontWeight = FontWeight.SemiBold,
+                                            fontSize = 15.sp,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        TextButton(onClick = { openPdfLauncher.launch(arrayOf("application/pdf")) }) {
+                                            Text("Open File", fontSize = 13.sp)
+                                        }
+                                    }
+                                }
+
+                                if (recentPdfs.isEmpty()) {
+                                    item {
+                                        Surface(
+                                            shape = RoundedCornerShape(16.dp),
+                                            color = MaterialTheme.colorScheme.surface,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { openPdfLauncher.launch(arrayOf("application/pdf")) }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(16.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.Description, contentDescription = null, modifier = Modifier.size(28.dp))
+                                                Spacer(Modifier.width(12.dp))
+                                                Column {
+                                                    Text("No recent PDFs yet", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                                    Text(
+                                                        "Tap here to open a PDF or create a new one below.",
+                                                        fontSize = 12.sp,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    items(recentPdfs.take(6), key = { it.file.absolutePath }) { item ->
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = MaterialTheme.colorScheme.surface,
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable { navigateTo(AppRoute.Reader(item.file)) }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(Icons.Default.PictureAsPdf, contentDescription = null, modifier = Modifier.size(24.dp))
+                                                Spacer(Modifier.width(12.dp))
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(item.name, fontWeight = FontWeight.Medium, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    Text("${item.sizeKb} KB", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                                IconButton(onClick = { storage.sharePdf(item.file) }, modifier = Modifier.size(32.dp)) {
+                                                    Icon(Icons.Default.Share, contentDescription = "Share", modifier = Modifier.size(18.dp))
+                                                }
+                                                IconButton(
+                                                    onClick = {
+                                                        item.file.delete()
+                                                        recentPdfs = storage.listRecentPdfs()
+                                                    },
+                                                    modifier = Modifier.size(32.dp)
+                                                ) {
+                                                    Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", modifier = Modifier.size(18.dp))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 2. AFTER RECENT FILES, ALL FEATURES APPEAR BELOW
+                                item {
+                                    Spacer(Modifier.height(6.dp))
+                                    Text(
+                                        "All PDF Tools",
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 15.sp
+                                    )
+                                }
+
+                                val paired = allTools.chunked(2)
+                                items(paired) { rowTools ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        rowTools.forEach { tool ->
+                                            Surface(
+                                                shape = RoundedCornerShape(16.dp),
+                                                color = MaterialTheme.colorScheme.surface,
+                                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clickable { navigateTo(tool.route) }
+                                            ) {
+                                                Column(modifier = Modifier.padding(14.dp)) {
+                                                    Icon(tool.icon, contentDescription = null, modifier = Modifier.size(24.dp))
+                                                    Spacer(Modifier.height(10.dp))
+                                                    Text(tool.title, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                    Text(tool.subtitle, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                                }
+                                            }
+                                        }
+                                        if (rowTools.size == 1) {
+                                            Spacer(Modifier.weight(1f))
+                                        }
+                                    }
+                                }
+                                item { Spacer(Modifier.height(24.dp)) }
+                            }
+                        }
+                    }
+
+                    is AppRoute.Reader -> ReaderScreen(
+                        file = route.file,
+                        storage = storage,
+                        onBack = { navigateBack() }
+                    )
+
+                    is AppRoute.Creator -> CreatorScreen(
+                        storage = storage,
+                        onBack = { navigateBack() },
+                        onPdfCreated = { created ->
+                            recentPdfs = storage.listRecentPdfs()
+                            navigateTo(AppRoute.Reader(created))
+                        }
+                    )
+
+                    is AppRoute.OfficeToPdf -> OfficeToPdfScreen(
+                        storage = storage,
+                        onBack = { navigateBack() },
+                        onPdfReady = { created ->
+                            recentPdfs = storage.listRecentPdfs()
+                            navigateTo(AppRoute.Reader(created))
+                        }
+                    )
+
+                    is AppRoute.LinkManager -> LinkManagerScreen(
+                        storage = storage,
+                        onBack = { navigateBack() },
+                        onPdfReady = { created ->
+                            recentPdfs = storage.listRecentPdfs()
+                            navigateTo(AppRoute.Reader(created))
+                        }
+                    )
+
+                    is AppRoute.Signature -> SignatureScreen(
+                        storage = storage,
+                        onBack = { navigateBack() },
+                        onPdfReady = { created ->
+                            recentPdfs = storage.listRecentPdfs()
+                            navigateTo(AppRoute.Reader(created))
+                        }
+                    )
+
+                    is AppRoute.Ocr -> OcrScreen(
+                        storage = storage,
+                        onBack = { navigateBack() }
+                    )
+
+                    is AppRoute.Utility -> QuickUtilityScreen(
+                        toolType = route.toolType,
+                        storage = storage,
+                        onBack = { navigateBack() },
+                        onPdfReady = { created ->
+                            recentPdfs = storage.listRecentPdfs()
+                            navigateTo(AppRoute.Reader(created))
+                        }
+                    )
                 }
             }
         }
@@ -57,392 +456,21 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AuraPdfRoot(activity: ComponentActivity, initialUri: Uri?) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-
-    var currentScreen by remember { mutableStateOf<AppScreen>(AppScreen.Home) }
-    var recentFiles by remember { mutableStateOf(FileUtils.listRecentPdfs(context)) }
-    var processingMsg by remember { mutableStateOf<String?>(null) }
-    var pendingAction by remember { mutableStateOf(PendingHomeAction.NONE) }
-    var showAboutDialog by remember { mutableStateOf(false) }
-
-    // Dialog states
-    var splitTarget by remember { mutableStateOf<Pair<File, Int>?>(null) }
-    var lockTarget by remember { mutableStateOf<File?>(null) }
-    var unlockTarget by remember { mutableStateOf<File?>(null) }
-    var watermarkTarget by remember { mutableStateOf<File?>(null) }
-    var compressTarget by remember { mutableStateOf<File?>(null) }
-    var signTarget by remember { mutableStateOf<Pair<File, Int>?>(null) }
-    var ocrResultText by remember { mutableStateOf<String?>(null) }
-
-    fun refreshRecents() {
-        recentFiles = FileUtils.listRecentPdfs(context)
-    }
-
-    fun toast(msg: String) {
-        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-    }
-
-    fun runTask(message: String, block: suspend () -> Unit) {
-        scope.launch {
-            processingMsg = message
-            try {
-                block()
-            } catch (e: Exception) {
-                toast("Error: ${e.localizedMessage ?: "Operation failed"}")
-            } finally {
-                processingMsg = null
-                refreshRecents()
-            }
-        }
-    }
-
-    LaunchedEffect(initialUri) {
-        if (initialUri != null) {
-            runTask("Opening PDF...") {
-                val file = FileUtils.copyUriToWorkspace(context, initialUri)
-                currentScreen = AppScreen.Viewer(file)
-            }
-        }
-    }
-
-    val openPdfLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        uri ?: return@rememberLauncherForActivityResult
-        runTask("Loading PDF...") {
-            val file = FileUtils.copyUriToWorkspace(context, uri)
-            when (pendingAction) {
-                PendingHomeAction.SPLIT -> {
-                    val count = PdfEngine.getPageCount(file)
-                    splitTarget = file to count
-                }
-                PendingHomeAction.COMPRESS -> compressTarget = file
-                PendingHomeAction.LOCK -> lockTarget = file
-                PendingHomeAction.OCR -> {
-                    val text = OcrEngine.extractTextFromPdf(file, null) { cur, tot ->
-                        processingMsg = "Running Offline OCR ($cur/$tot)..."
-                    }
-                    ocrResultText = text
-                }
-                PendingHomeAction.NONE -> currentScreen = AppScreen.Viewer(file)
-            }
-            pendingAction = PendingHomeAction.NONE
-        }
-    }
-
-    val mergeLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.size < 2) {
-            toast("Select at least 2 PDFs to merge")
-            return@rememberLauncherForActivityResult
-        }
-        runTask("Merging ${uris.size} PDFs...") {
-            val out = File(FileUtils.getPdfWorkspaceDir(context), "merged_${System.currentTimeMillis()}.pdf")
-            PdfEngine.mergePdfs(context, uris, out)
-            toast("Merged successfully!")
-            currentScreen = AppScreen.Viewer(out)
-        }
-    }
-
-    val imagesToPdfLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        runTask("Converting ${uris.size} images to PDF...") {
-            val bitmaps = FileUtils.decodeBitmapsFromUris(context, uris)
-            if (bitmaps.isEmpty()) {
-                toast("Could not decode selected images")
-                return@runTask
-            }
-            val out = File(FileUtils.getPdfWorkspaceDir(context), "photos_${System.currentTimeMillis()}.pdf")
-            try {
-                PdfEngine.imagesToPdf(bitmaps, out)
-            } finally {
-                bitmaps.forEach { it.recycle() }
-            }
-            toast("PDF created!")
-            currentScreen = AppScreen.Viewer(out)
-        }
-    }
-
-    val scannerLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
-            scanResult?.pdf?.uri?.let { pdfUri ->
-                runTask("Saving scanned PDF...") {
-                    val out = FileUtils.copyUriToWorkspace(context, pdfUri, "scan")
-                    currentScreen = AppScreen.Viewer(out)
-                }
-            }
-        }
-    }
-
-    fun launchScanner() {
-        val options = GmsDocumentScannerOptions.Builder()
-            .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
-            .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
-            .setGalleryImportAllowed(true)
-            .build()
-        GmsDocumentScanning.getClient(options)
-            .getStartScanIntent(activity)
-            .addOnSuccessListener { sender ->
-                scannerLauncher.launch(IntentSenderRequest.Builder(sender).build())
-            }
-            .addOnFailureListener {
-                toast("Document Scanner requires Google Play Services on this device")
-            }
-    }
-
-    // ---------------- Dialogs ----------------
-    processingMsg?.let { ProcessingDialog(it) }
-    if (showAboutDialog) AboutAppDialog(onDismiss = { showAboutDialog = false })
-
-    splitTarget?.let { (file, count) ->
-        SplitPdfDialog(
-            totalPages = count,
-            onDismiss = { splitTarget = null },
-            onConfirm = { start, end ->
-                splitTarget = null
-                runTask("Extracting pages $start-$end...") {
-                    val out = File(FileUtils.getPdfWorkspaceDir(context), "split_${start}_${end}_${System.currentTimeMillis()}.pdf")
-                    PdfEngine.splitPdf(file, start, end, out)
-                    toast("Extracted pages $start-$end")
-                    currentScreen = AppScreen.Viewer(out)
-                }
-            }
-        )
-    }
-
-    lockTarget?.let { file ->
-        PasswordDialog(
-            title = "Lock PDF (AES-128)",
-            confirmLabel = "Lock",
-            onDismiss = { lockTarget = null },
-            onConfirm = { pwd ->
-                lockTarget = null
-                runTask("Encrypting PDF...") {
-                    val out = File(FileUtils.getPdfWorkspaceDir(context), "locked_${file.name}")
-                    PdfEngine.lockPdf(file, pwd, out)
-                    toast("PDF locked with password")
-                }
-            }
-        )
-    }
-
-    unlockTarget?.let { file ->
-        PasswordDialog(
-            title = "Unlock PDF",
-            confirmLabel = "Unlock",
-            onDismiss = { unlockTarget = null },
-            onConfirm = { pwd ->
-                unlockTarget = null
-                runTask("Removing password...") {
-                    val out = File(FileUtils.getPdfWorkspaceDir(context), "unlocked_${file.name}")
-                    PdfEngine.unlockPdf(file, pwd, out)
-                    toast("PDF unlocked")
-                    currentScreen = AppScreen.Viewer(out)
-                }
-            }
-        )
-    }
-
-    watermarkTarget?.let { file ->
-        WatermarkDialog(
-            onDismiss = { watermarkTarget = null },
-            onConfirm = { text, opacity ->
-                watermarkTarget = null
-                runTask("Applying watermark...") {
-                    val out = File(FileUtils.getPdfWorkspaceDir(context), "watermarked_${System.currentTimeMillis()}.pdf")
-                    PdfEngine.addWatermark(file, text, opacity, out)
-                    toast("Watermark added")
-                    currentScreen = AppScreen.Viewer(out)
-                }
-            }
-        )
-    }
-
-    compressTarget?.let { file ->
-        CompressDialog(
-            onDismiss = { compressTarget = null },
-            onConfirm = { q, s ->
-                compressTarget = null
-                runTask("Compressing PDF...") {
-                    val out = File(FileUtils.getPdfWorkspaceDir(context), "compressed_${System.currentTimeMillis()}.pdf")
-                    PdfEngine.compressPdf(file, q, s, out)
-                    toast("Saved ${FileUtils.formatSize(out.length())}")
-                    currentScreen = AppScreen.Viewer(out)
-                }
-            }
-        )
-    }
-
-    signTarget?.let { (file, pageIdx) ->
-        SignaturePadDialog(
-            onDismiss = { signTarget = null },
-            onSaveSignature = { sigBmp ->
-                signTarget = null
-                runTask("Stamping signature...") {
-                    val out = File(FileUtils.getPdfWorkspaceDir(context), "signed_${System.currentTimeMillis()}.pdf")
-                    try {
-                        PdfEngine.stampBitmapOnPage(
-                            inputFile = file,
-                            pageIndex = pageIdx,
-                            bitmap = sigBmp,
-                            normX = 0.58f,
-                            normY = 0.80f,
-                            normW = 0.36f,
-                            normH = 0.14f,
-                            outputFile = out
-                        )
-                    } finally {
-                        sigBmp.recycle()
-                    }
-                    toast("Signature stamped!")
-                    currentScreen = AppScreen.Viewer(out)
-                }
-            }
-        )
-    }
-
-    ocrResultText?.let { txt ->
-        OcrResultDialog(
-            extractedText = txt,
-            onDismiss = { ocrResultText = null },
-            onCopied = {
-                toast("Text copied to clipboard")
-                ocrResultText = null
-            }
-        )
-    }
-
-    // ---------------- Screen Navigation ----------------
-    AnimatedContent(targetState = currentScreen, label = "rootNav") { screen ->
-        when (screen) {
-            is AppScreen.Home -> {
-                HomeScreen(
-                    recentFiles = recentFiles,
-                    onOpenPdf = {
-                        pendingAction = PendingHomeAction.NONE
-                        openPdfLauncher.launch(arrayOf("application/pdf"))
-                    },
-                    onScanDoc = { launchScanner() },
-                    onMergePdfs = { mergeLauncher.launch(arrayOf("application/pdf")) },
-                    onImagesToPdf = { imagesToPdfLauncher.launch(arrayOf("image/*")) },
-                    onPickForSplit = {
-                        pendingAction = PendingHomeAction.SPLIT
-                        openPdfLauncher.launch(arrayOf("application/pdf"))
-                    },
-                    onPickForCompress = {
-                        pendingAction = PendingHomeAction.COMPRESS
-                        openPdfLauncher.launch(arrayOf("application/pdf"))
-                    },
-                    onPickForLock = {
-                        pendingAction = PendingHomeAction.LOCK
-                        openPdfLauncher.launch(arrayOf("application/pdf"))
-                    },
-                    onPickForOcr = {
-                        pendingAction = PendingHomeAction.OCR
-                        openPdfLauncher.launch(arrayOf("application/pdf"))
-                    },
-                    onOpenRecent = { file -> currentScreen = AppScreen.Viewer(file) },
-                    onShareFile = { file -> FileUtils.shareFile(context, file) },
-                    onDeleteRecent = { file ->
-                        file.delete()
-                        refreshRecents()
-                    },
-                    onOpenAbout = { showAboutDialog = true }
-                )
-            }
-
-            is AppScreen.Viewer -> {
-                PdfViewerScreen(
-                    pdfFile = screen.file,
-                    onBack = { currentScreen = AppScreen.Home },
-                    onOpenMarkup = { idx -> currentScreen = AppScreen.Annotate(screen.file, idx) },
-                    onOpenSign = { idx -> signTarget = screen.file to idx },
-                    onOpenOrganizer = { currentScreen = AppScreen.Organizer(screen.file) },
-                    onRunOcr = { singleIdx ->
-                        runTask("Running Offline OCR...") {
-                            val text = OcrEngine.extractTextFromPdf(screen.file, singleIdx) { cur, tot ->
-                                processingMsg = "Offline OCR ($cur/$tot)..."
-                            }
-                            ocrResultText = text
-                        }
-                    },
-                    onSplit = { total -> splitTarget = screen.file to total },
-                    onLock = { lockTarget = screen.file },
-                    onUnlock = { unlockTarget = screen.file },
-                    onWatermark = { watermarkTarget = screen.file },
-                    onCompress = { compressTarget = screen.file },
-                    onExportImages = {
-                        runTask("Exporting pages as PNG...") {
-                            val outDir = File(context.cacheDir, "exported_${System.currentTimeMillis()}")
-                            val images = PdfEngine.exportPagesToImages(screen.file, outDir)
-                            var saved = 0
-                            images.forEach { img ->
-                                if (FileUtils.saveFileToDownloads(context, img, "image/png")) saved++
-                            }
-                            toast("Saved $saved PNG images to Downloads/AuraPDF")
-                        }
-                    },
-                    onSaveDownloads = {
-                        runTask("Saving to Downloads...") {
-                            val ok = FileUtils.saveFileToDownloads(context, screen.file)
-                            toast(if (ok) "Saved to Downloads/AuraPDF" else "Save failed")
-                        }
-                    },
-                    onShare = { FileUtils.shareFile(context, screen.file) }
-                )
-            }
-
-            is AppScreen.Organizer -> {
-                PageOrganizerScreen(
-                    pdfFile = screen.file,
-                    onBack = { currentScreen = AppScreen.Viewer(screen.file) },
-                    onSaveChanges = { specs ->
-                        runTask("Saving page changes...") {
-                            val out = File(FileUtils.getPdfWorkspaceDir(context), "edited_${System.currentTimeMillis()}.pdf")
-                            PdfEngine.applyPageEdits(screen.file, specs, out)
-                            toast("Pages updated!")
-                            currentScreen = AppScreen.Viewer(out)
-                        }
-                    }
-                )
-            }
-
-            is AppScreen.Annotate -> {
-                AnnotateScreen(
-                    pdfFile = screen.file,
-                    pageIndex = screen.pageIndex,
-                    onBack = { currentScreen = AppScreen.Viewer(screen.file) },
-                    onSaveOverlay = { overlayBmp ->
-                        runTask("Saving markup onto PDF...") {
-                            val out = File(FileUtils.getPdfWorkspaceDir(context), "marked_${System.currentTimeMillis()}.pdf")
-                            try {
-                                PdfEngine.stampBitmapOnPage(
-                                    inputFile = screen.file,
-                                    pageIndex = screen.pageIndex,
-                                    bitmap = overlayBmp,
-                                    normX = 0f,
-                                    normY = 0f,
-                                    normW = 1f,
-                                    normH = 1f,
-                                    outputFile = out
-                                )
-                            } finally {
-                                overlayBmp.recycle()
-                            }
-                            toast("Markup saved!")
-                            currentScreen = AppScreen.Viewer(out)
-                        }
-                    }
-                )
-            }
+private fun DrawerMenuRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = androidx.compose.ui.graphics.Color.Transparent,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(label, fontSize = 14.sp, fontWeight = FontWeight.Medium)
         }
     }
 }

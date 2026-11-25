@@ -2,12 +2,10 @@ package com.aurapdf.editor.engine
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Color
+import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
-import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
-import com.tom_roush.pdfbox.io.MemoryUsageSetting
 import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
@@ -18,276 +16,421 @@ import com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy
 import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
-import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
-import com.tom_roush.pdfbox.text.PDFTextStripper
+import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionURI
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDBorderStyleDictionary
 import com.tom_roush.pdfbox.util.Matrix
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
+data class PdfLinkInfo(
+    val index: Int,
+    val pageIndex: Int,
+    val url: String
+)
+
+data class CreatorElement(
+    val id: Long = System.nanoTime(),
+    val pageIndex: Int = 0,
+    val isImage: Boolean = false,
+    val text: String = "",
+    val fontSize: Float = 14f,
+    val isBold: Boolean = false,
+    val colorHex: Int = 0x000000,
+    val linkUrl: String = "",
+    val imageUri: Uri? = null,
+    val xPercent: Float = 0.08f,
+    val yPercent: Float = 0.12f,
+    val widthPercent: Float = 0.65f
+)
+
 object PdfEngine {
 
-    fun init(context: Context) {
-        PDFBoxResourceLoader.init(context.applicationContext)
+    private fun sanitize(text: String): String {
+        val sb = StringBuilder()
+        for (ch in text) {
+            if (ch.code in 32..126) sb.append(ch) else sb.append(' ')
+        }
+        return sb.toString()
     }
 
-    suspend fun getPageCount(file: File): Int = withContext(Dispatchers.IO) {
-        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-            PdfRenderer(pfd).use { renderer ->
-                renderer.pageCount
-            }
-        }
+    fun getPageCount(file: File): Int {
+        PDDocument.load(file).use { return it.numberOfPages }
     }
 
-    /** Merge multiple PDFs into one output file (memory-safe temp-file mode) */
-    suspend fun mergePdfs(context: Context, uris: List<Uri>, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            val merger = PDFMergerUtility()
-            merger.destinationFileName = outputFile.absolutePath
-            val streams = uris.mapNotNull { context.contentResolver.openInputStream(it) }
-            if (streams.size < 2) {
-                streams.forEach { runCatching { it.close() } }
-                throw IllegalStateException("Could not open at least 2 PDF files")
-            }
-            try {
-                streams.forEach { merger.addSource(it) }
-                merger.mergeDocuments(MemoryUsageSetting.setupTempFileOnly())
-            } finally {
-                streams.forEach { runCatching { it.close() } }
-            }
-            outputFile
-        }
+    fun renderPageBitmap(file: File, pageIndex: Int, targetWidth: Int = 1080): Bitmap {
+        val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        val renderer = PdfRenderer(pfd)
+        val safeIdx = pageIndex.coerceIn(0, (renderer.pageCount - 1).coerceAtLeast(0))
+        val page = renderer.openPage(safeIdx)
+        val scale = targetWidth.toFloat() / page.width.coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(
+            (page.width * scale).toInt().coerceAtLeast(1),
+            (page.height * scale).toInt().coerceAtLeast(1),
+            Bitmap.Config.ARGB_8888
+        )
+        bmp.eraseColor(android.graphics.Color.WHITE)
+        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+        page.close()
+        renderer.close()
+        pfd.close()
+        return bmp
+    }
 
-    /** Split / extract a 1-based inclusive page range */
-    suspend fun splitPdf(inputFile: File, startPage: Int, endPage: Int, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile).use { source ->
-                if (source.numberOfPages <= 0) throw IllegalStateException("PDF has no pages")
-                PDDocument().use { target ->
-                    val safeStart = (startPage - 1).coerceIn(0, source.numberOfPages - 1)
-                    val safeEnd = (endPage - 1).coerceIn(safeStart, source.numberOfPages - 1)
-                    for (i in safeStart..safeEnd) {
-                        target.importPage(source.getPage(i))
+    // Full In-App PDF Creator (Blank PDF + Multiple Pages + Text + JPG/PNG Images + Clickable Links + Page Numbers)
+    fun createCustomPdf(
+        context: Context,
+        outputFile: File,
+        pageCount: Int,
+        pageSizeName: String,
+        landscape: Boolean,
+        addPageNumbers: Boolean,
+        titleMeta: String,
+        authorMeta: String,
+        elements: List<CreatorElement>
+    ): Int {
+        val baseRect = when (pageSizeName) {
+            "Letter" -> PDRectangle.LETTER
+            "Legal" -> PDRectangle.LEGAL
+            else -> PDRectangle.A4
+        }
+        val rect = if (landscape) PDRectangle(baseRect.height, baseRect.width) else baseRect
+
+        val doc = PDDocument()
+        if (titleMeta.isNotBlank()) doc.documentInformation.title = titleMeta
+        if (authorMeta.isNotBlank()) doc.documentInformation.author = authorMeta
+
+        for (p in 0 until pageCount.coerceAtLeast(1)) {
+            val page = PDPage(rect)
+            doc.addPage(page)
+            val pw = rect.width
+            val ph = rect.height
+            val cs = PDPageContentStream(doc, page)
+
+            val pageItems = elements.filter { it.pageIndex == p }
+            for (el in pageItems) {
+                val x = (el.xPercent.coerceIn(0.02f, 0.90f)) * pw
+                val topY = ph - (el.yPercent.coerceIn(0.04f, 0.94f)) * ph
+
+                if (el.isImage && el.imageUri != null) {
+                    context.contentResolver.openInputStream(el.imageUri)?.use { input ->
+                        val bmp = BitmapFactory.decodeStream(input)
+                        if (bmp != null) {
+                            val pdImg = LosslessFactory.createFromImage(doc, bmp)
+                            val drawW = (el.widthPercent.coerceIn(0.15f, 0.92f)) * pw
+                            val aspect = bmp.height.toFloat() / bmp.width.coerceAtLeast(1)
+                            val drawH = (drawW * aspect).coerceAtMost(ph * 0.78f)
+                            val drawY = (topY - drawH).coerceAtLeast(24f)
+                            cs.drawImage(pdImg, x, drawY, drawW, drawH)
+                            bmp.recycle()
+                        }
                     }
-                    target.save(outputFile)
+                } else if (!el.isImage && el.text.isNotBlank()) {
+                    val font = if (el.isBold) PDType1Font.HELVETICA_BOLD else PDType1Font.HELVETICA
+                    val r = (el.colorHex shr 16) and 0xFF
+                    val g = (el.colorHex shr 8) and 0xFF
+                    val b = el.colorHex and 0xFF
+                    val hasLink = el.linkUrl.isNotBlank()
+
+                    if (hasLink) {
+                        cs.setNonStrokingColor(25, 118, 210)
+                    } else {
+                        cs.setNonStrokingColor(r, g, b)
+                    }
+
+                    val lines = el.text.split("\n")
+                    var curY = topY
+                    lines.forEach { rawLine ->
+                        val clean = sanitize(rawLine)
+                        cs.beginText()
+                        cs.setFont(font, el.fontSize)
+                        cs.newLineAtOffset(x, curY)
+                        cs.showText(clean)
+                        cs.endText()
+
+                        if (hasLink && clean.isNotEmpty()) {
+                            val textW = (font.getStringWidth(clean) / 1000f) * el.fontSize
+                            // Draw underline
+                            cs.setStrokingColor(25, 118, 210)
+                            cs.setLineWidth(0.8f)
+                            cs.moveTo(x, curY - 2f)
+                            cs.lineTo(x + textW, curY - 2f)
+                            cs.stroke()
+
+                            // Attach real PDF clickable URI annotation
+                            val link = PDAnnotationLink()
+                            val border = PDBorderStyleDictionary().apply { width = 0f }
+                            link.borderStyle = border
+                            link.rectangle = PDRectangle(x, curY - 3f, textW.coerceAtLeast(24f), el.fontSize + 4f)
+                            val action = PDActionURI().apply {
+                                uri = if (el.linkUrl.startsWith("http://") || el.linkUrl.startsWith("https://")) {
+                                    el.linkUrl
+                                } else {
+                                    "https://${el.linkUrl}"
+                                }
+                            }
+                            link.action = action
+                            page.annotations.add(link)
+                        }
+                        curY -= (el.fontSize * 1.35f)
+                    }
+                    cs.setNonStrokingColor(0, 0, 0)
                 }
             }
-            outputFile
+
+            if (addPageNumbers) {
+                cs.setNonStrokingColor(120, 120, 120)
+                cs.beginText()
+                cs.setFont(PDType1Font.HELVETICA, 10f)
+                cs.newLineAtOffset(pw / 2f - 18f, 22f)
+                cs.showText("Page ${p + 1} / $pageCount")
+                cs.endText()
+            }
+
+            cs.close()
         }
 
-    /** Reorder, rotate, and keep only selected pages in one fast pass */
-    suspend fun applyPageEdits(
-        inputFile: File,
-        pageSpecs: List<Pair<Int, Int>>,
-        outputFile: File
-    ): File = withContext(Dispatchers.IO) {
-        PDDocument.load(inputFile).use { source ->
-            if (source.numberOfPages <= 0) throw IllegalStateException("PDF has no pages")
-            PDDocument().use { target ->
-                for ((origIndex, extraRotation) in pageSpecs) {
-                    if (origIndex in 0 until source.numberOfPages) {
-                        val imported = target.importPage(source.getPage(origIndex))
-                        imported.rotation = (imported.rotation + extraRotation) % 360
-                    }
-                }
-                target.save(outputFile)
-            }
-        }
-        outputFile
+        doc.save(outputFile)
+        val total = doc.numberOfPages
+        doc.close()
+        return total
     }
 
-    /** Lock PDF with AES-128 password protection */
-    suspend fun lockPdf(inputFile: File, password: String, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile).use { doc ->
-                val permissions = AccessPermission()
-                val policy = StandardProtectionPolicy(password, password, permissions).apply {
-                    encryptionKeyLength = 128
+    // List all hyperlinks inside a PDF
+    fun listLinks(file: File): List<PdfLinkInfo> {
+        val result = mutableListOf<PdfLinkInfo>()
+        PDDocument.load(file).use { doc ->
+            for (p in 0 until doc.numberOfPages) {
+                val annots = doc.getPage(p).annotations
+                annots.forEachIndexed { idx, ann ->
+                    if (ann is PDAnnotationLink) {
+                        val uri = (ann.action as? PDActionURI)?.uri ?: "(Internal Link)"
+                        result.add(PdfLinkInfo(idx, p, uri))
+                    }
                 }
-                doc.protect(policy)
-                doc.save(outputFile)
             }
-            outputFile
         }
+        return result
+    }
 
-    /** Unlock password-protected PDF */
-    suspend fun unlockPdf(inputFile: File, password: String, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile, password).use { doc ->
-                doc.isAllSecurityToBeRemoved = true
-                doc.save(outputFile)
-            }
-            outputFile
-        }
-
-    /** Add diagonal translucent watermark across all pages (ASCII-safe for Type1 font) */
-    suspend fun addWatermark(
+    // Add a clickable link (with optional text or invisible overlay) to an existing PDF page
+    fun addLinkToPdf(
         inputFile: File,
-        watermarkText: String,
-        opacity: Float = 0.22f,
-        outputFile: File
-    ): File = withContext(Dispatchers.IO) {
-        val safeText = watermarkText.filter { it.code in 32..126 }.ifBlank { "CONFIDENTIAL" }
+        outputFile: File,
+        pageIndex: Int,
+        labelText: String,
+        url: String,
+        xPercent: Float,
+        yPercent: Float,
+        fontSize: Float = 13f
+    ) {
         PDDocument.load(inputFile).use { doc ->
-            for (page in doc.pages) {
-                val box = page.cropBox ?: page.mediaBox
-                val gs = PDExtendedGraphicsState().apply {
-                    nonStrokingAlphaConstant = opacity.coerceIn(0.05f, 0.8f)
-                }
-                PDPageContentStream(
-                    doc, page, PDPageContentStream.AppendMode.APPEND, true, true
-                ).use { cs ->
-                    cs.setGraphicsStateParameters(gs)
+            val safeIdx = pageIndex.coerceIn(0, doc.numberOfPages - 1)
+            val page = doc.getPage(safeIdx)
+            val pw = page.mediaBox.width
+            val ph = page.mediaBox.height
+            val x = xPercent.coerceIn(0.03f, 0.88f) * pw
+            val y = ph - (yPercent.coerceIn(0.05f, 0.94f) * ph)
+            val finalUrl = if (url.startsWith("http://") || url.startsWith("https://")) url else "https://$url"
+
+            var boxW = 140f
+            if (labelText.isNotBlank()) {
+                val clean = sanitize(labelText)
+                val font = PDType1Font.HELVETICA_BOLD
+                boxW = ((font.getStringWidth(clean) / 1000f) * fontSize).coerceAtLeast(36f)
+                PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
+                    cs.setNonStrokingColor(25, 118, 210)
                     cs.beginText()
-                    cs.setFont(PDType1Font.HELVETICA_BOLD, 44f)
-                    val centerX = box.width * 0.22f
-                    val centerY = box.height * 0.38f
-                    cs.setTextMatrix(Matrix.getRotateInstance(Math.toRadians(35.0), centerX, centerY))
-                    cs.showText(safeText)
+                    cs.setFont(font, fontSize)
+                    cs.newLineAtOffset(x, y)
+                    cs.showText(clean)
+                    cs.endText()
+                    cs.setStrokingColor(25, 118, 210)
+                    cs.setLineWidth(0.9f)
+                    cs.moveTo(x, y - 2f)
+                    cs.lineTo(x + boxW, y - 2f)
+                    cs.stroke()
+                }
+            }
+
+            val link = PDAnnotationLink().apply {
+                borderStyle = PDBorderStyleDictionary().apply { width = 0f }
+                rectangle = PDRectangle(x, y - 4f, boxW, fontSize + 8f)
+                action = PDActionURI().apply { uri = finalUrl }
+            }
+            page.annotations.add(link)
+            doc.save(outputFile)
+        }
+    }
+
+    // Remove a single link or all links from a PDF
+    fun removeLinks(inputFile: File, outputFile: File, targetPage: Int? = null, targetUrl: String? = null): Int {
+        var removed = 0
+        PDDocument.load(inputFile).use { doc ->
+            for (p in 0 until doc.numberOfPages) {
+                if (targetPage != null && p != targetPage) continue
+                val page = doc.getPage(p)
+                val annots = page.annotations
+                val toRemove = annots.filter { ann ->
+                    if (ann !is PDAnnotationLink) return@filter false
+                    if (targetUrl == null) true
+                    else ((ann.action as? PDActionURI)?.uri ?: "(Internal Link)") == targetUrl
+                }
+                if (toRemove.isNotEmpty()) {
+                    annots.removeAll(toRemove.toSet())
+                    page.annotations = annots
+                    removed += toRemove.size
+                }
+            }
+            doc.save(outputFile)
+        }
+        return removed
+    }
+
+    // Images (JPG/PNG) to PDF
+    fun imagesToPdf(context: Context, uris: List<Uri>, outputFile: File): Int {
+        val doc = PDDocument()
+        for (uri in uris) {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val bmp = BitmapFactory.decodeStream(input) ?: return@use
+                val page = PDPage(PDRectangle.A4)
+                doc.addPage(page)
+                val pw = page.mediaBox.width
+                val ph = page.mediaBox.height
+                val margin = 24f
+                val maxW = pw - margin * 2
+                val maxH = ph - margin * 2
+                val scale = minOf(maxW / bmp.width, maxH / bmp.height)
+                val dw = bmp.width * scale
+                val dh = bmp.height * scale
+                val dx = (pw - dw) / 2f
+                val dy = (ph - dh) / 2f
+                val pdImg = JPEGFactory.createFromImage(doc, bmp, 0.88f)
+                PDPageContentStream(doc, page).use { cs ->
+                    cs.drawImage(pdImg, dx, dy, dw, dh)
+                }
+                bmp.recycle()
+            }
+        }
+        doc.save(outputFile)
+        val count = doc.numberOfPages
+        doc.close()
+        return count
+    }
+
+    // Merge multiple PDFs
+    fun mergePdfs(files: List<File>, outputFile: File) {
+        val merger = PDFMergerUtility()
+        merger.destinationFileName = outputFile.absolutePath
+        files.forEach { merger.addSource(it) }
+        merger.mergeDocuments(null)
+    }
+
+    // Split PDF by 1-based inclusive range
+    fun splitPdf(inputFile: File, outputFile: File, fromPage1: Int, toPage1: Int): Int {
+        PDDocument.load(inputFile).use { src ->
+            val start = (fromPage1 - 1).coerceIn(0, src.numberOfPages - 1)
+            val end = (toPage1 - 1).coerceIn(start, src.numberOfPages - 1)
+            val dst = PDDocument()
+            for (i in start..end) {
+                dst.importPage(src.getPage(i))
+            }
+            dst.save(outputFile)
+            val count = dst.numberOfPages
+            dst.close()
+            return count
+        }
+    }
+
+    // Rotate page or all pages
+    fun rotatePdf(inputFile: File, outputFile: File, degrees: Int, pageIndex: Int? = null) {
+        PDDocument.load(inputFile).use { doc ->
+            for (i in 0 until doc.numberOfPages) {
+                if (pageIndex == null || i == pageIndex) {
+                    val p = doc.getPage(i)
+                    p.rotation = (p.rotation + degrees) % 360
+                }
+            }
+            doc.save(outputFile)
+        }
+    }
+
+    // Delete specific 1-based page
+    fun deletePage(inputFile: File, outputFile: File, pageNumber1: Int) {
+        PDDocument.load(inputFile).use { doc ->
+            if (doc.numberOfPages <= 1) throw IllegalStateException("Cannot delete the only page in a PDF.")
+            val idx = (pageNumber1 - 1).coerceIn(0, doc.numberOfPages - 1)
+            doc.removePage(idx)
+            doc.save(outputFile)
+        }
+    }
+
+    // Add diagonal watermark to all pages
+    fun addWatermark(inputFile: File, outputFile: File, text: String) {
+        val clean = sanitize(text.ifBlank { "AURA PDF" })
+        PDDocument.load(inputFile).use { doc ->
+            for (i in 0 until doc.numberOfPages) {
+                val page = doc.getPage(i)
+                val pw = page.mediaBox.width
+                val ph = page.mediaBox.height
+                PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
+                    cs.setNonStrokingColor(180, 180, 180)
+                    cs.beginText()
+                    cs.setFont(PDType1Font.HELVETICA_BOLD, 42f)
+                    cs.setTextMatrix(Matrix.getRotateInstance(Math.toRadians(45.0), pw * 0.22f, ph * 0.35f))
+                    cs.showText(clean)
                     cs.endText()
                 }
             }
             doc.save(outputFile)
         }
-        outputFile
     }
 
-    /** Stamp a transparent bitmap (signature or flattened markup overlay) onto a page */
-    suspend fun stampBitmapOnPage(
-        inputFile: File,
-        pageIndex: Int,
-        bitmap: Bitmap,
-        normX: Float = 0f,
-        normY: Float = 0f,
-        normW: Float = 1f,
-        normH: Float = 1f,
-        outputFile: File
-    ): File = withContext(Dispatchers.IO) {
+    // Stamp signature bitmap onto PDF page
+    fun stampSignature(inputFile: File, outputFile: File, signatureBmp: Bitmap, pageIndex: Int, xPercent: Float, yPercent: Float) {
         PDDocument.load(inputFile).use { doc ->
-            if (doc.numberOfPages <= 0) throw IllegalStateException("PDF has no pages")
-            val safeIndex = pageIndex.coerceIn(0, doc.numberOfPages - 1)
-            val page = doc.getPage(safeIndex)
-            val box = page.cropBox ?: page.mediaBox
-            val x = box.width * normX
-            val width = box.width * normW
-            val height = box.height * normH
-            val y = box.height * (1f - normY - normH)
-
-            val pdImage = LosslessFactory.createFromImage(doc, bitmap)
-            PDPageContentStream(
-                doc, page, PDPageContentStream.AppendMode.APPEND, true, true
-            ).use { cs ->
-                cs.drawImage(pdImage, x, y, width, height)
+            val safeIdx = pageIndex.coerceIn(0, doc.numberOfPages - 1)
+            val page = doc.getPage(safeIdx)
+            val pw = page.mediaBox.width
+            val ph = page.mediaBox.height
+            val pdImg = LosslessFactory.createFromImage(doc, signatureBmp)
+            val w = pw * 0.32f
+            val h = w * (signatureBmp.height.toFloat() / signatureBmp.width.coerceAtLeast(1))
+            val x = xPercent.coerceIn(0.05f, 0.65f) * pw
+            val y = ph - (yPercent.coerceIn(0.10f, 0.90f) * ph) - h
+            PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
+                cs.drawImage(pdImg, x, y.coerceAtLeast(16f), w, h)
             }
             doc.save(outputFile)
         }
-        outputFile
     }
 
-    /** Convert multiple images into a single PDF */
-    suspend fun imagesToPdf(
-        bitmaps: List<Bitmap>,
-        outputFile: File,
-        quality: Float = 0.82f
-    ): File = withContext(Dispatchers.IO) {
-        if (bitmaps.isEmpty()) throw IllegalStateException("No images to convert")
-        PDDocument().use { doc ->
-            bitmaps.forEach { bmp ->
-                val page = PDPage(PDRectangle(bmp.width.toFloat(), bmp.height.toFloat()))
-                doc.addPage(page)
-                val pdImage = JPEGFactory.createFromImage(doc, bmp, quality.coerceIn(0.2f, 1.0f))
-                PDPageContentStream(doc, page).use { cs ->
-                    cs.drawImage(pdImage, 0f, 0f)
-                }
+    // Password protect (encrypt) PDF
+    fun protectPdf(inputFile: File, outputFile: File, password: String) {
+        PDDocument.load(inputFile).use { doc ->
+            val ap = AccessPermission()
+            val spp = StandardProtectionPolicy(password, password, ap).apply {
+                encryptionKeyLength = 128
             }
-            FileOutputStream(outputFile).use { fos ->
-                doc.save(fos)
-            }
+            doc.protect(spp)
+            doc.save(outputFile)
         }
-        outputFile
     }
 
-    /** Compress PDF offline by re-encoding pages at reduced resolution & JPEG quality */
-    suspend fun compressPdf(
-        inputFile: File,
-        quality: Float,
-        scaleFactor: Float,
-        outputFile: File
-    ): File = withContext(Dispatchers.IO) {
-        ParcelFileDescriptor.open(inputFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-            PdfRenderer(pfd).use { renderer ->
-                PDDocument().use { outDoc ->
-                    for (i in 0 until renderer.pageCount) {
-                        renderer.openPage(i).use { page ->
-                            val w = (page.width * 1.5f * scaleFactor).toInt().coerceAtLeast(400)
-                            val h = (page.height * 1.5f * scaleFactor).toInt().coerceAtLeast(400)
-                            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                            bmp.eraseColor(Color.WHITE)
-                            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-
-                            val pdPage = PDPage(PDRectangle(page.width.toFloat(), page.height.toFloat()))
-                            outDoc.addPage(pdPage)
-                            val pdImage = JPEGFactory.createFromImage(outDoc, bmp, quality)
-                            PDPageContentStream(outDoc, pdPage).use { cs ->
-                                cs.drawImage(pdImage, 0f, 0f, page.width.toFloat(), page.height.toFloat())
-                            }
-                            bmp.recycle()
-                        }
-                    }
-                    outDoc.save(outputFile)
-                }
-            }
+    // Unlock password-protected PDF
+    fun unlockPdf(inputFile: File, outputFile: File, password: String) {
+        PDDocument.load(inputFile, password).use { doc ->
+            doc.isAllSecurityToBeRemoved = true
+            doc.save(outputFile)
         }
-        outputFile
     }
 
-    /** Export every page of a PDF to PNG files */
-    suspend fun exportPagesToImages(inputFile: File, outputDir: File): List<File> =
-        withContext(Dispatchers.IO) {
-            if (!outputDir.exists()) outputDir.mkdirs()
-            val exported = mutableListOf<File>()
-            ParcelFileDescriptor.open(inputFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                PdfRenderer(pfd).use { renderer ->
-                    for (i in 0 until renderer.pageCount) {
-                        renderer.openPage(i).use { page ->
-                            val targetW = 1440
-                            val targetH = (targetW.toFloat() / page.width.coerceAtLeast(1) * page.height)
-                                .toInt()
-                                .coerceAtLeast(1)
-                            val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-                            bmp.eraseColor(Color.WHITE)
-                            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-
-                            val imgFile = File(outputDir, "${inputFile.nameWithoutExtension}_page_${i + 1}.png")
-                            FileOutputStream(imgFile).use { fos ->
-                                bmp.compress(Bitmap.CompressFormat.PNG, 100, fos)
-                            }
-                            bmp.recycle()
-                            exported.add(imgFile)
-                        }
-                    }
-                }
-            }
-            exported
+    // Save PDF page as PNG image
+    fun exportPageAsPng(inputFile: File, pageIndex: Int, outPng: File) {
+        val bmp = renderPageBitmap(inputFile, pageIndex, 1440)
+        FileOutputStream(outPng).use { out ->
+            bmp.compress(Bitmap.CompressFormat.PNG, 95, out)
         }
-
-    /** Search embedded text inside PDF; returns 0-based matching page indices */
-    suspend fun searchTextInPdf(inputFile: File, query: String): List<Int> =
-        withContext(Dispatchers.IO) {
-            if (query.isBlank()) return@withContext emptyList()
-            val matches = mutableListOf<Int>()
-            PDDocument.load(inputFile).use { doc ->
-                val stripper = PDFTextStripper()
-                for (i in 1..doc.numberOfPages) {
-                    stripper.startPage = i
-                    stripper.endPage = i
-                    val text = stripper.getText(doc)
-                    if (text.contains(query, ignoreCase = true)) {
-                        matches.add(i - 1)
-                    }
-                }
-            }
-            matches
-        }
+        bmp.recycle()
+    }
 }
