@@ -209,4 +209,18 @@ class SafDocumentRepository @Inject constructor(
         if (!dir.exists()) return 0L
         return dir.walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }
+
+    suspend fun exportPdfToUri(sourceUriString: String, destinationUri: Uri): Boolean =
+        withContext(ioDispatcher) {
+            runCatching {
+                val sourceFile = materializeReadOnlyCopy(Uri.parse(sourceUriString))
+                context.contentResolver.openOutputStream(destinationUri)?.use { output ->
+                    sourceFile.inputStream().use { input ->
+                        input.copyTo(output, bufferSize = 64 * 1024)
+                    }
+                } ?: error("Cannot open destination output stream")
+                true
+            }.getOrDefault(false)
+        }
+
 }

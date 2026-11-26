@@ -1,15 +1,19 @@
 package com.offlinepdf.studio.feature.reader
 
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
@@ -39,6 +43,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -46,40 +51,31 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.Bookmark
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.Bookmarks
-import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.RotateRight
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material.icons.outlined.Tag
-import androidx.compose.material.icons.outlined.TextFields
-import androidx.compose.material.icons.outlined.UnfoldMore
-import androidx.compose.material.icons.outlined.ViewCarousel
-import androidx.compose.material.icons.outlined.ViewColumn
-import androidx.compose.material.icons.outlined.ViewDay
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -88,8 +84,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -105,6 +99,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -114,19 +109,19 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.offlinepdf.studio.core.pdf.PdfGeometryHelper
+import com.offlinepdf.studio.core.common.Formatters
 import com.offlinepdf.studio.core.pdf.PdfSearchBox
 import com.offlinepdf.studio.core.pdf.ReadingCanvasTheme
-import com.offlinepdf.studio.core.pdf.ReadingLayoutMode
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -137,52 +132,53 @@ import kotlin.math.roundToInt
 fun PdfReaderScreen(
     uriString: String,
     onBack: () -> Unit,
+    onOpenEditor: (String) -> Unit,
     viewModel: PdfReaderViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
 
-    val verticalListState = rememberLazyListState()
-    val spreadListState = rememberLazyListState()
-    val pagerState = rememberPagerState(
-        initialPage = state.currentPage.coerceAtLeast(0),
-        pageCount = { state.pageCount.coerceAtLeast(1) }
-    )
-
-    var showInfoDialog by remember { mutableStateOf(false) }
-    var showSearchBar by remember { mutableStateOf(false) }
+    var isSearchMode by remember { mutableStateOf(false) }
     var showOverflowMenu by remember { mutableStateOf(false) }
     var showThumbnailsSheet by remember { mutableStateOf(false) }
     var showBookmarksSheet by remember { mutableStateOf(false) }
-    var showOutlineSheet by remember { mutableStateOf(false) }
-    var showGoToPageDialog by remember { mutableStateOf(false) }
-    var goToPageInput by remember { mutableStateOf("") }
+    var showInfoDialog by remember { mutableStateOf(false) }
     var passwordInput by remember { mutableStateOf("") }
 
-    // Smooth pinch-to-zoom & pan state
+    // Smooth pinch-zoom & pan state
     val scaleAnim = remember { Animatable(1f) }
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
     var viewportSize by remember { mutableStateOf(IntSize.Zero) }
 
-    // Premium auto-hiding vertical scrollbar visibility
+    // Google Drive-style right-side scrubber visibility (auto-hides after 2.5s)
     var isDraggingScrollbar by remember { mutableStateOf(false) }
     var scrollbarVisible by remember { mutableStateOf(false) }
 
-    val isScrolling by remember {
-        derivedStateOf {
-            verticalListState.isScrollInProgress ||
-                spreadListState.isScrollInProgress ||
-                pagerState.isScrollInProgress
+    val isScrolling by remember { derivedStateOf { listState.isScrollInProgress } }
+
+    // SAF Save / Download launcher
+    val saveDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/pdf")
+    ) { destUri ->
+        if (destUri != null) {
+            viewModel.exportToDestination(destUri)
         }
+    }
+
+    LaunchedEffect(state.statusToast) {
+        val msg = state.statusToast ?: return@LaunchedEffect
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+        viewModel.clearStatusToast()
     }
 
     LaunchedEffect(isScrolling, isDraggingScrollbar) {
         if (isScrolling || isDraggingScrollbar) {
             scrollbarVisible = true
         } else {
-            delay(1600)
+            delay(2400)
             scrollbarVisible = false
         }
     }
@@ -199,13 +195,7 @@ fun PdfReaderScreen(
     fun jumpToPage(pageIndex: Int) {
         val target = pageIndex.coerceIn(0, (state.pageCount - 1).coerceAtLeast(0))
         viewModel.onPageChanged(target)
-        scope.launch {
-            when (state.layoutMode) {
-                ReadingLayoutMode.CONTINUOUS_VERTICAL -> verticalListState.scrollToItem(target)
-                ReadingLayoutMode.SINGLE_PAGE_HORIZONTAL -> pagerState.scrollToPage(target)
-                ReadingLayoutMode.TWO_PAGE_SPREAD -> spreadListState.scrollToItem(target / 2)
-            }
-        }
+        scope.launch { listState.scrollToItem(target) }
     }
 
     LaunchedEffect(uriString) {
@@ -218,442 +208,396 @@ fun PdfReaderScreen(
         }
     }
 
-    LaunchedEffect(verticalListState.firstVisibleItemIndex, state.layoutMode, state.pageCount) {
-        if (state.layoutMode == ReadingLayoutMode.CONTINUOUS_VERTICAL && state.pageCount > 0) {
-            viewModel.onPageChanged(verticalListState.firstVisibleItemIndex)
-        }
-    }
-    LaunchedEffect(pagerState.currentPage, state.layoutMode, state.pageCount) {
-        if (state.layoutMode == ReadingLayoutMode.SINGLE_PAGE_HORIZONTAL && state.pageCount > 0) {
-            viewModel.onPageChanged(pagerState.currentPage)
-        }
-    }
-    LaunchedEffect(spreadListState.firstVisibleItemIndex, state.layoutMode, state.pageCount) {
-        if (state.layoutMode == ReadingLayoutMode.TWO_PAGE_SPREAD && state.pageCount > 0) {
-            viewModel.onPageChanged((spreadListState.firstVisibleItemIndex * 2).coerceAtMost(state.pageCount - 1))
+    LaunchedEffect(listState.firstVisibleItemIndex, state.pageCount) {
+        if (state.pageCount > 0) {
+            viewModel.onPageChanged(listState.firstVisibleItemIndex)
         }
     }
 
     val canvasBackground = when (state.canvasTheme) {
-        ReadingCanvasTheme.LIGHT -> MaterialTheme.colorScheme.surfaceVariant
-        ReadingCanvasTheme.DARK_CANVAS -> Color(0xFF141820)
-        ReadingCanvasTheme.NIGHT_INVERTED -> Color(0xFF07090D)
+        ReadingCanvasTheme.LIGHT -> Color(0xFFE5E7EB)
+        ReadingCanvasTheme.DARK_CANVAS -> Color(0xFF121316)
+        ReadingCanvasTheme.NIGHT_INVERTED -> Color(0xFF090A0C)
     }
 
-    // Full-screen edge-to-edge Box: PDF occupies 100% of screen; TopBar floats cleanly above and auto-hides on tap
-    Box(
+    val headerBg = Color(0xFF141518)
+    val headerFg = Color(0xFFF3F4F6)
+
+    Column(
         modifier = Modifier
             .fillMaxSize()
             .background(canvasBackground)
-            .onSizeChanged { viewportSize = it }
     ) {
-        // 1. Main Full-Screen PDF Canvas with buttery-smooth custom pinch-zoom & pan
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = { viewModel.toggleControlsVisibility() },
-                        onDoubleTap = { tapOffset ->
-                            scope.launch {
-                                if (scaleAnim.value > 1.25f) {
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                    scaleAnim.animateTo(
-                                        1f,
-                                        animationSpec = tween(220, easing = FastOutSlowInEasing)
-                                    )
-                                } else {
-                                    val targetScale = 2.4f
-                                    val centerX = viewportSize.width / 2f
-                                    val centerY = viewportSize.height / 2f
-                                    val desiredX = (centerX - tapOffset.x) * (targetScale - 1f)
-                                    val desiredY = (centerY - tapOffset.y) * (targetScale - 1f)
-                                    val (cx, cy) = clampOffsets(targetScale, desiredX, desiredY)
-                                    offsetX = cx
-                                    offsetY = cy
-                                    scaleAnim.animateTo(
-                                        targetScale,
-                                        animationSpec = tween(220, easing = FastOutSlowInEasing)
-                                    )
-                                }
-                            }
-                        }
-                    )
-                }
-                .pointerInput(Unit) {
-                    awaitEachPointerEventScope {
-                        while (true) {
-                            awaitFirstDown(requireUnconsumed = false)
-                            do {
-                                val event = awaitPointerEvent()
-                                val activePointers = event.changes.count { it.pressed }
-                                if (activePointers >= 2) {
-                                    val zoomChange = event.calculateZoom()
-                                    val panChange = event.calculatePan()
-                                    val centroid = event.calculateCentroid(useCurrent = true)
-                                    val oldScale = scaleAnim.value
-                                    val newScale = (oldScale * zoomChange).coerceIn(1f, 5f)
-                                    val scaleFactor = if (oldScale > 0f) newScale / oldScale else 1f
-
-                                    val centerX = viewportSize.width / 2f
-                                    val centerY = viewportSize.height / 2f
-                                    val focalX = centroid.x - centerX
-                                    val focalY = centroid.y - centerY
-
-                                    val rawX = (offsetX - focalX) * scaleFactor + focalX + panChange.x
-                                    val rawY = (offsetY - focalY) * scaleFactor + focalY + panChange.y
-                                    val (cx, cy) = clampOffsets(newScale, rawX, rawY)
-
-                                    scope.launch { scaleAnim.snapTo(newScale) }
-                                    offsetX = cx
-                                    offsetY = cy
-
-                                    event.changes.forEach { change ->
-                                        if (change.positionChanged()) change.consume()
-                                    }
-                                } else if (activePointers == 1 && scaleAnim.value > 1.03f) {
-                                    // Smooth horizontal + vertical pan when zoomed in, while still
-                                    // allowing vertical LazyColumn scrolling if user reaches top/bottom edge
-                                    val panChange = event.calculatePan()
-                                    val maxX = (viewportSize.width * (scaleAnim.value - 1f)) / 2f
-                                    val maxY = (viewportSize.height * (scaleAnim.value - 1f)) / 2f
-                                    val nextX = (offsetX + panChange.x).coerceIn(-maxX, maxX)
-                                    val nextY = (offsetY + panChange.y).coerceIn(-maxY, maxY)
-                                    val consumedHoriz = abs(nextX - offsetX) > 0.5f
-                                    val consumedVert = abs(nextY - offsetY) > 0.5f
-                                    offsetX = nextX
-                                    offsetY = nextY
-                                    if (consumedHoriz || consumedVert) {
-                                        event.changes.forEach { change ->
-                                            if (change.positionChanged()) change.consume()
-                                        }
-                                    }
-                                }
-                            } while (event.changes.any { it.pressed })
-                        }
-                    }
-                },
-            contentAlignment = Alignment.Center
-        ) {
-            when {
-                state.isLoading -> CircularProgressIndicator()
-                state.errorMessage != null -> {
-                    Text(
-                        text = state.errorMessage ?: "Error loading PDF",
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(24.dp)
-                    )
-                }
-                state.pageCount > 0 -> {
-                    val screenWidthPx = with(LocalDensity.current) {
-                        LocalConfiguration.current.screenWidthDp.dp.toPx().toInt()
-                    }
-                    // Sharper high-DPI rendering for crisp pinch-to-zoom text
-                    val renderWidth = (screenWidthPx * 1.8f).toInt().coerceAtMost(2200)
-                    val currentScale = scaleAnim.value
-                    val zoomModifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer(
-                            scaleX = currentScale,
-                            scaleY = currentScale,
-                            translationX = offsetX,
-                            translationY = offsetY
-                        )
-
-                    when (state.layoutMode) {
-                        ReadingLayoutMode.CONTINUOUS_VERTICAL -> {
-                            LazyColumn(
-                                state = verticalListState,
-                                modifier = zoomModifier,
-                                contentPadding = PaddingValues(
-                                    top = if (state.controlsVisible) 88.dp else 8.dp,
-                                    bottom = 24.dp,
-                                    start = 4.dp,
-                                    end = 4.dp
-                                ),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                items(state.pageCount, key = { it }) { pageIndex ->
-                                    PdfPageTile(
-                                        pageIndex = pageIndex,
-                                        renderWidthPx = renderWidth,
-                                        rotationDegrees = state.rotationDegrees,
-                                        canvasTheme = state.canvasTheme,
-                                        highlightBoxes = state.searchBoxesByPage[pageIndex].orEmpty(),
-                                        renderProvider = { viewModel.renderPage(pageIndex, it) }
-                                    )
-                                }
-                            }
-                        }
-                        ReadingLayoutMode.SINGLE_PAGE_HORIZONTAL -> {
-                            HorizontalPager(
-                                state = pagerState,
-                                modifier = zoomModifier,
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
-                                pageSpacing = 8.dp
-                            ) { pageIndex ->
-                                Box(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    PdfPageTile(
-                                        pageIndex = pageIndex,
-                                        renderWidthPx = renderWidth,
-                                        rotationDegrees = state.rotationDegrees,
-                                        canvasTheme = state.canvasTheme,
-                                        highlightBoxes = state.searchBoxesByPage[pageIndex].orEmpty(),
-                                        renderProvider = { viewModel.renderPage(pageIndex, it) }
-                                    )
-                                }
-                            }
-                        }
-                        ReadingLayoutMode.TWO_PAGE_SPREAD -> {
-                            val spreadCount = (state.pageCount + 1) / 2
-                            LazyColumn(
-                                state = spreadListState,
-                                modifier = zoomModifier,
-                                contentPadding = PaddingValues(
-                                    top = if (state.controlsVisible) 88.dp else 8.dp,
-                                    bottom = 24.dp,
-                                    start = 4.dp,
-                                    end = 4.dp
-                                ),
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                items(spreadCount, key = { it }) { spreadIdx ->
-                                    val leftPage = spreadIdx * 2
-                                    val rightPage = leftPage + 1
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        Box(modifier = Modifier.weight(1f)) {
-                                            PdfPageTile(
-                                                pageIndex = leftPage,
-                                                renderWidthPx = renderWidth / 2,
-                                                rotationDegrees = state.rotationDegrees,
-                                                canvasTheme = state.canvasTheme,
-                                                highlightBoxes = state.searchBoxesByPage[leftPage].orEmpty(),
-                                                renderProvider = { viewModel.renderPage(leftPage, it) }
-                                            )
-                                        }
-                                        Box(modifier = Modifier.weight(1f)) {
-                                            if (rightPage < state.pageCount) {
-                                                PdfPageTile(
-                                                    pageIndex = rightPage,
-                                                    renderWidthPx = renderWidth / 2,
-                                                    rotationDegrees = state.rotationDegrees,
-                                                    canvasTheme = state.canvasTheme,
-                                                    highlightBoxes = state.searchBoxesByPage[rightPage].orEmpty(),
-                                                    renderProvider = { viewModel.renderPage(rightPage, it) }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Premium Google Drive–Style Vertical Fast-Scroll Handle (appears ONLY while scrolling/dragging)
-        if (state.pageCount > 1) {
-            PremiumVerticalPageScrubber(
-                visible = scrollbarVisible || isDraggingScrollbar,
-                currentPage = state.currentPage,
-                pageCount = state.pageCount,
-                isDragging = isDraggingScrollbar,
-                onDragStateChanged = { dragging -> isDraggingScrollbar = dragging },
-                onScrubToPage = { target -> jumpToPage(target) },
-                onTapPageBubble = {
-                    goToPageInput = (state.currentPage + 1).toString()
-                    showGoToPageDialog = true
-                },
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(top = 80.dp, bottom = 28.dp)
-            )
-        }
-
-        // 3. Floating Top App Bar + Search Bar (toggles smoothly on single tap for true full-screen reading)
+        // 1. Compact Google Drive-Style Single-Row Header (~52dp, thumb-friendly)
         AnimatedVisibility(
-            visible = state.controlsVisible,
-            enter = slideInVertically { -it } + fadeIn(tween(180)),
-            exit = slideOutVertically { -it } + fadeOut(tween(180)),
-            modifier = Modifier.align(Alignment.TopCenter)
+            visible = state.controlsVisible || isSearchMode,
+            enter = slideInVertically { -it } + fadeIn(tween(160)),
+            exit = slideOutVertically { -it } + fadeOut(tween(160))
         ) {
-            Column(
+            Surface(
+                color = headerBg,
+                contentColor = headerFg,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
+                    .statusBarsPadding()
             ) {
-                TopAppBar(
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent
-                    ),
-                    title = {
-                        Column {
-                            Text(
-                                text = state.documentTitle.ifBlank { "PDF Reader" },
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.titleMedium
-                            )
-                            if (state.pageCount > 0) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(52.dp)
+                        .padding(horizontal = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isSearchMode) {
+                        // Inline Search Mode directly inside the header bar
+                        IconButton(onClick = {
+                            isSearchMode = false
+                            viewModel.clearSearch()
+                        }) {
+                            Icon(Icons.Outlined.Close, contentDescription = "Close search", tint = headerFg)
+                        }
+
+                        Box(
+                            modifier = Modifier.weight(1f),
+                            contentAlignment = Alignment.CenterStart
+                        ) {
+                            if (state.searchQuery.isEmpty()) {
                                 Text(
-                                    text = "Page ${state.currentPage + 1} of ${state.pageCount}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    text = "Search in PDF...",
+                                    color = Color(0xFF9CA3AF),
+                                    fontSize = 15.sp
                                 )
                             }
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = { showSearchBar = !showSearchBar }) {
-                            Icon(Icons.Outlined.Search, contentDescription = "Search")
-                        }
-                        IconButton(onClick = { showThumbnailsSheet = true }) {
-                            Icon(Icons.Outlined.GridView, contentDescription = "Page thumbnails")
-                        }
-                        IconButton(onClick = viewModel::toggleCurrentPageBookmark) {
-                            val bookmarked = state.bookmarkedPages.contains(state.currentPage)
-                            Icon(
-                                imageVector = if (bookmarked) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
-                                contentDescription = "Bookmark page"
+                            BasicTextField(
+                                value = state.searchQuery,
+                                onValueChange = { q ->
+                                    viewModel.searchText(q) { firstPage -> jumpToPage(firstPage) }
+                                },
+                                singleLine = true,
+                                textStyle = TextStyle(color = headerFg, fontSize = 15.sp),
+                                cursorBrush = SolidColor(Color(0xFF93C5FD)),
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
-                        IconButton(onClick = { showOverflowMenu = true }) {
-                            Icon(Icons.Outlined.MoreVert, contentDescription = "Reader options")
+
+                        if (state.searchQuery.isNotBlank()) {
+                            val matchText = if (state.searchHits.isNotEmpty()) {
+                                "${state.activeHitIndex + 1}/${state.searchHits.size} (${state.totalMatchCount})"
+                            } else if (state.isSearching) {
+                                "..."
+                            } else {
+                                "0"
+                            }
+                            Text(
+                                text = matchText,
+                                color = Color(0xFFD1D5DB),
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(horizontal = 4.dp)
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { viewModel.selectPreviousHit()?.let(::jumpToPage) },
+                            enabled = state.searchHits.isNotEmpty(),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Outlined.KeyboardArrowUp,
+                                contentDescription = "Previous match",
+                                tint = if (state.searchHits.isNotEmpty()) headerFg else Color(0xFF6B7280)
+                            )
+                        }
+                        IconButton(
+                            onClick = { viewModel.selectNextHit()?.let(::jumpToPage) },
+                            enabled = state.searchHits.isNotEmpty(),
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Icon(
+                                Icons.Outlined.KeyboardArrowDown,
+                                contentDescription = "Next match",
+                                tint = if (state.searchHits.isNotEmpty()) headerFg else Color(0xFF6B7280)
+                            )
+                        }
+                    } else {
+                        // Minimal Normal Header: Back + File Name + [Search, Thumbnails, 3-dot Menu]
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = "Back", tint = headerFg)
+                        }
+
+                        Text(
+                            text = state.documentTitle.ifBlank { "Document.pdf" },
+                            color = headerFg,
+                            fontSize = 17.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 4.dp)
+                        )
+
+                        IconButton(onClick = { isSearchMode = true }) {
+                            Icon(Icons.Outlined.Search, contentDescription = "Search", tint = headerFg)
+                        }
+
+                        IconButton(onClick = { showThumbnailsSheet = true }) {
+                            Icon(Icons.Outlined.GridView, contentDescription = "Thumbnails", tint = headerFg)
+                        }
+
+                        Box {
+                            IconButton(onClick = { showOverflowMenu = true }) {
+                                Icon(Icons.Outlined.MoreVert, contentDescription = "Menu", tint = headerFg)
+                            }
                             DropdownMenu(
                                 expanded = showOverflowMenu,
                                 onDismissRequest = { showOverflowMenu = false }
                             ) {
                                 DropdownMenuItem(
-                                    text = { Text("Go to Page...") },
-                                    leadingIcon = { Icon(Icons.Outlined.Tag, null) },
+                                    text = { Text("Download / Save to Storage") },
+                                    leadingIcon = { Icon(Icons.Outlined.Download, null) },
                                     onClick = {
                                         showOverflowMenu = false
-                                        goToPageInput = (state.currentPage + 1).toString()
-                                        showGoToPageDialog = true
+                                        val suggested = state.documentTitle.ifBlank { "Document.pdf" }
+                                        saveDocumentLauncher.launch(suggested)
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Continuous Vertical") },
-                                    leadingIcon = { Icon(Icons.Outlined.ViewDay, null) },
+                                    text = {
+                                        val label = when (state.canvasTheme) {
+                                            ReadingCanvasTheme.DARK_CANVAS -> "Theme: Dark → Light"
+                                            ReadingCanvasTheme.LIGHT -> "Theme: Light → Night Invert"
+                                            ReadingCanvasTheme.NIGHT_INVERTED -> "Theme: Night → Dark"
+                                        }
+                                        Text(label)
+                                    },
+                                    leadingIcon = { Icon(Icons.Outlined.DarkMode, null) },
                                     onClick = {
                                         showOverflowMenu = false
-                                        viewModel.setLayoutMode(ReadingLayoutMode.CONTINUOUS_VERTICAL)
+                                        viewModel.cycleCanvasTheme()
                                     }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Single Page (Horizontal)") },
-                                    leadingIcon = { Icon(Icons.Outlined.ViewCarousel, null) },
+                                    text = {
+                                        val isSaved = state.bookmarkedPages.contains(state.currentPage)
+                                        Text(if (isSaved) "Remove Page Bookmark" else "Bookmark Page ${state.currentPage + 1}")
+                                    },
+                                    leadingIcon = {
+                                        val isSaved = state.bookmarkedPages.contains(state.currentPage)
+                                        Icon(
+                                            if (isSaved) Icons.Outlined.Bookmark else Icons.Outlined.BookmarkBorder,
+                                            null
+                                        )
+                                    },
                                     onClick = {
                                         showOverflowMenu = false
-                                        viewModel.setLayoutMode(ReadingLayoutMode.SINGLE_PAGE_HORIZONTAL)
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Two-Page Spread") },
-                                    leadingIcon = { Icon(Icons.Outlined.ViewColumn, null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        viewModel.setLayoutMode(ReadingLayoutMode.TWO_PAGE_SPREAD)
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Select / Copy Page Text") },
-                                    leadingIcon = { Icon(Icons.Outlined.TextFields, null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        viewModel.loadCurrentPageText()
+                                        viewModel.toggleCurrentPageBookmark()
                                     }
                                 )
                                 DropdownMenuItem(
                                     text = { Text("Bookmarks (${state.bookmarks.size})") },
                                     leadingIcon = { Icon(Icons.Outlined.Bookmarks, null) },
-                                    onClick = { showOverflowMenu = false; showBookmarksSheet = true }
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        showBookmarksSheet = true
+                                    }
                                 )
                                 DropdownMenuItem(
-                                    text = { Text("Table of Contents (${state.outline.size})") },
-                                    leadingIcon = { Icon(Icons.AutoMirrored.Outlined.List, null) },
-                                    onClick = { showOverflowMenu = false; showOutlineSheet = true }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Rotate 90°") },
-                                    leadingIcon = { Icon(Icons.Outlined.RotateRight, null) },
-                                    onClick = { showOverflowMenu = false; viewModel.rotateClockwise() }
-                                )
-                                DropdownMenuItem(
-                                    text = {
-                                        val label = when (state.canvasTheme) {
-                                            ReadingCanvasTheme.LIGHT -> "Theme: Light → Dark Canvas"
-                                            ReadingCanvasTheme.DARK_CANVAS -> "Theme: Dark Canvas → Night Invert"
-                                            ReadingCanvasTheme.NIGHT_INVERTED -> "Theme: Night Invert → Light"
-                                        }
-                                        Text(label)
-                                    },
-                                    leadingIcon = { Icon(Icons.Outlined.DarkMode, null) },
-                                    onClick = { showOverflowMenu = false; viewModel.cycleCanvasTheme() }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text("Document Info") },
+                                    text = { Text("PDF Info") },
                                     leadingIcon = { Icon(Icons.Outlined.Info, null) },
-                                    onClick = { showOverflowMenu = false; showInfoDialog = true }
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        showInfoDialog = true
+                                    }
                                 )
-                            }
-                        }
-                    }
-                )
-
-                AnimatedVisibility(visible = showSearchBar) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        OutlinedTextField(
-                            value = state.searchQuery,
-                            onValueChange = viewModel::searchText,
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            placeholder = { Text("Search text in PDF...") }
-                        )
-                        if (state.searchHits.isNotEmpty()) {
-                            Text(
-                                text = "${state.activeHitIndex + 1}/${state.searchHits.size}",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                            IconButton(onClick = { viewModel.selectPreviousHit()?.let(::jumpToPage) }) {
-                                Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "Previous match")
-                            }
-                            IconButton(onClick = { viewModel.selectNextHit()?.let(::jumpToPage) }) {
-                                Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "Next match")
+                                DropdownMenuItem(
+                                    text = { Text("Share") },
+                                    leadingIcon = { Icon(Icons.Outlined.Share, null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        sharePdfUri(context, uriString)
+                                    }
+                                )
                             }
                         }
                     }
                 }
             }
         }
+
+        // 2. Direct Edge-to-Edge PDF Viewport (Zero margins, Zero bottom bar)
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .onSizeChanged { viewportSize = it }
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {
+                                if (!isSearchMode) {
+                                    viewModel.toggleControlsVisibility()
+                                }
+                            },
+                            onDoubleTap = { tapOffset ->
+                                scope.launch {
+                                    if (scaleAnim.value > 1.2f) {
+                                        offsetX = 0f
+                                        offsetY = 0f
+                                        scaleAnim.animateTo(1f, tween(200, easing = FastOutSlowInEasing))
+                                    } else {
+                                        val target = 2.3f
+                                        val cx = (viewportSize.width / 2f - tapOffset.x) * (target - 1f)
+                                        val cy = (viewportSize.height / 2f - tapOffset.y) * (target - 1f)
+                                        val (clampedX, clampedY) = clampOffsets(target, cx, cy)
+                                        offsetX = clampedX
+                                        offsetY = clampedY
+                                        scaleAnim.animateTo(target, tween(200, easing = FastOutSlowInEasing))
+                                    }
+                                }
+                            }
+                        )
+                    }
+                    .pointerInput(Unit) {
+                        awaitEachPointerEventScope {
+                            while (true) {
+                                awaitFirstDown(requireUnconsumed = false)
+                                do {
+                                    val event = awaitPointerEvent()
+                                    val activePointers = event.changes.count { it.pressed }
+                                    if (activePointers >= 2) {
+                                        val zoomChange = event.calculateZoom()
+                                        val panChange = event.calculatePan()
+                                        val centroid = event.calculateCentroid(useCurrent = true)
+                                        val oldScale = scaleAnim.value
+                                        val newScale = (oldScale * zoomChange).coerceIn(1f, 4.5f)
+                                        val factor = if (oldScale > 0f) newScale / oldScale else 1f
+
+                                        val focalX = centroid.x - viewportSize.width / 2f
+                                        val focalY = centroid.y - viewportSize.height / 2f
+                                        val rawX = (offsetX - focalX) * factor + focalX + panChange.x
+                                        val rawY = (offsetY - focalY) * factor + focalY + panChange.y
+                                        val (cx, cy) = clampOffsets(newScale, rawX, rawY)
+
+                                        scope.launch { scaleAnim.snapTo(newScale) }
+                                        offsetX = cx
+                                        offsetY = cy
+
+                                        event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                    } else if (activePointers == 1 && scaleAnim.value > 1.03f) {
+                                        val panChange = event.calculatePan()
+                                        val maxX = (viewportSize.width * (scaleAnim.value - 1f)) / 2f
+                                        val maxY = (viewportSize.height * (scaleAnim.value - 1f)) / 2f
+                                        val nextX = (offsetX + panChange.x).coerceIn(-maxX, maxX)
+                                        val nextY = (offsetY + panChange.y).coerceIn(-maxY, maxY)
+                                        val movedX = abs(nextX - offsetX) > 0.5f
+                                        val movedY = abs(nextY - offsetY) > 0.5f
+                                        offsetX = nextX
+                                        offsetY = nextY
+                                        if (movedX || movedY) {
+                                            event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                        }
+                                    }
+                                } while (event.changes.any { it.pressed })
+                            }
+                        }
+                    },
+                contentAlignment = Alignment.Center
+            ) {
+                when {
+                    state.isLoading -> CircularProgressIndicator()
+                    state.errorMessage != null -> {
+                        Text(
+                            text = state.errorMessage ?: "Error loading PDF",
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(24.dp)
+                        )
+                    }
+                    state.pageCount > 0 -> {
+                        val screenWidthPx = with(LocalDensity.current) {
+                            LocalConfiguration.current.screenWidthDp.dp.toPx().toInt()
+                        }
+                        // Smoothness-first resolution: fast preview while moving, crisp immediately on stop
+                        val crispWidthPx = (screenWidthPx * 1.35f).toInt().coerceIn(720, 1440)
+                        val fastPreviewWidthPx = (screenWidthPx * 0.55f).toInt().coerceIn(320, 540)
+                        val activeMotion = isScrolling || isDraggingScrollbar
+
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer(
+                                    scaleX = scaleAnim.value,
+                                    scaleY = scaleAnim.value,
+                                    translationX = offsetX,
+                                    translationY = offsetY
+                                ),
+                            contentPadding = PaddingValues(vertical = 0.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(state.pageCount, key = { it }) { pageIndex ->
+                                SmoothPdfPageItem(
+                                    pageIndex = pageIndex,
+                                    fastWidthPx = fastPreviewWidthPx,
+                                    crispWidthPx = crispWidthPx,
+                                    isActivelyMoving = activeMotion,
+                                    canvasTheme = state.canvasTheme,
+                                    highlightBoxes = state.searchBoxesByPage[pageIndex].orEmpty(),
+                                    aspectRatioProvider = { viewModel.getPageAspectRatio(pageIndex) },
+                                    renderProvider = { width -> viewModel.renderPage(pageIndex, width) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. Slim Google Drive-Style Right-Side Vertical Slider + Page Pill (auto-hides after ~2.5s)
+            if (state.pageCount > 1) {
+                GoogleDriveVerticalScrubber(
+                    visible = scrollbarVisible || isDraggingScrollbar,
+                    currentPage = state.currentPage,
+                    pageCount = state.pageCount,
+                    isDragging = isDraggingScrollbar,
+                    onDragStateChanged = { isDraggingScrollbar = it },
+                    onScrubToPage = { jumpToPage(it) },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .navigationBarsPadding()
+                        .padding(top = 12.dp, bottom = 76.dp)
+                )
+            }
+
+            // 4. Bottom-Right Floating Edit Button (hides/reappears with user intent, opens separate Editor)
+            AnimatedVisibility(
+                visible = state.controlsVisible && !isSearchMode && state.pageCount > 0,
+                enter = scaleIn(tween(180)) + fadeIn(tween(180)),
+                exit = scaleOut(tween(160)) + fadeOut(tween(160)),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .navigationBarsPadding()
+                    .padding(end = 16.dp, bottom = 18.dp)
+            ) {
+                FloatingActionButton(
+                    onClick = { onOpenEditor(uriString) },
+                    shape = RoundedCornerShape(16.dp),
+                    containerColor = Color(0xFFE6DCFA),
+                    contentColor = Color(0xFF1F1638),
+                    modifier = Modifier.size(52.dp)
+                ) {
+                    Icon(Icons.Outlined.Edit, contentDescription = "Edit PDF")
+                }
+            }
+        }
     }
 
-    // Thumbnails Bottom Sheet
+    // Thumbnails Sheet
     if (showThumbnailsSheet && state.pageCount > 0) {
         ModalBottomSheet(onDismissRequest = { showThumbnailsSheet = false }) {
             Text(
-                text = "Page Thumbnails (${state.pageCount})",
+                text = "Pages (${state.pageCount})",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
@@ -679,7 +623,7 @@ fun PdfReaderScreen(
         }
     }
 
-    // Bookmarks Bottom Sheet
+    // Bookmarks Sheet
     if (showBookmarksSheet) {
         ModalBottomSheet(onDismissRequest = { showBookmarksSheet = false }) {
             Column(modifier = Modifier.padding(16.dp)) {
@@ -687,7 +631,7 @@ fun PdfReaderScreen(
                 Spacer(Modifier.height(8.dp))
                 if (state.bookmarks.isEmpty()) {
                     Text(
-                        "No bookmarks yet. Tap the bookmark icon in the top bar to save a page.",
+                        "No bookmarks saved yet. Open the three-dot menu to bookmark the current page.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -716,118 +660,24 @@ fun PdfReaderScreen(
         }
     }
 
-    // Table of Contents Bottom Sheet
-    if (showOutlineSheet) {
-        ModalBottomSheet(onDismissRequest = { showOutlineSheet = false }) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text("Table of Contents", style = MaterialTheme.typography.titleMedium)
-                Spacer(Modifier.height(8.dp))
-                if (state.outline.isEmpty()) {
-                    Text(
-                        "This PDF does not contain an embedded table of contents.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                } else {
-                    LazyColumn(modifier = Modifier.height(340.dp)) {
-                        items(state.outline) { entry ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        showOutlineSheet = false
-                                        jumpToPage(entry.pageIndex)
-                                    }
-                                    .padding(start = (entry.depth * 14).dp, top = 8.dp, bottom = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text(
-                                    text = entry.title,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Spacer(Modifier.width(8.dp))
-                                Text(
-                                    text = "p. ${entry.pageIndex + 1}",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Selectable / Copy Page Text Dialog
-    if (state.isExtractingText || state.extractedPageText != null) {
+    // PDF Info Dialog
+    if (showInfoDialog) {
+        val m = state.metadata
         AlertDialog(
-            onDismissRequest = viewModel::dismissExtractedText,
-            title = { Text("Page ${state.currentPage + 1} Text") },
+            onDismissRequest = { showInfoDialog = false },
+            title = { Text("PDF Information") },
             text = {
-                if (state.isExtractingText) {
-                    Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
-                    }
-                } else {
-                    SelectionContainer {
-                        Text(
-                            text = state.extractedPageText.orEmpty(),
-                            modifier = Modifier
-                                .height(300.dp)
-                                .verticalScroll(rememberScrollState()),
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Name: ${state.documentTitle.ifBlank { m.title }}")
+                    Text("Size: ${Formatters.formatFileSize(state.fileSizeBytes)}")
+                    Text("Pages: ${m.pageCount}")
+                    Text("Format: ${m.format}")
+                    Text("Encryption: ${m.encryption}")
+                    if (m.author.isNotBlank()) Text("Author: ${m.author}")
                 }
             },
             confirmButton = {
-                TextButton(
-                    onClick = {
-                        val txt = state.extractedPageText.orEmpty()
-                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipboard.setPrimaryClip(ClipData.newPlainText("PDF Page Text", txt))
-                        viewModel.dismissExtractedText()
-                    }
-                ) {
-                    Icon(Icons.Outlined.ContentCopy, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Copy All")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = viewModel::dismissExtractedText) { Text("Close") }
-            }
-        )
-    }
-
-    // Go To Page Dialog
-    if (showGoToPageDialog) {
-        AlertDialog(
-            onDismissRequest = { showGoToPageDialog = false },
-            title = { Text("Go to Page (1–${state.pageCount})") },
-            text = {
-                OutlinedTextField(
-                    value = goToPageInput,
-                    onValueChange = { goToPageInput = it.filter(Char::isDigit) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    label = { Text("Page number") }
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    val num = goToPageInput.toIntOrNull()
-                    if (num != null && num in 1..state.pageCount) {
-                        jumpToPage(num - 1)
-                    }
-                    showGoToPageDialog = false
-                }) { Text("Go") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showGoToPageDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showInfoDialog = false }) { Text("Close") }
             }
         )
     }
@@ -860,60 +710,36 @@ fun PdfReaderScreen(
             }
         )
     }
-
-    // Document Metadata Dialog
-    if (showInfoDialog) {
-        val m = state.metadata
-        AlertDialog(
-            onDismissRequest = { showInfoDialog = false },
-            title = { Text("Document Information") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Title: ${m.title.ifBlank { state.documentTitle }}")
-                    Text("Pages: ${m.pageCount}")
-                    Text("Format: ${m.format}")
-                    Text("Encryption: ${m.encryption}")
-                    if (m.author.isNotBlank()) Text("Author: ${m.author}")
-                    if (m.creator.isNotBlank()) Text("Creator: ${m.creator}")
-                    if (m.producer.isNotBlank()) Text("Producer: ${m.producer}")
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showInfoDialog = false }) { Text("Close") }
-            }
-        )
-    }
 }
 
 /**
- * Premium Google Drive–style vertical fast-scroll handle with floating page indicator pill.
- * Only appears while scrolling or dragging, and smoothly fades out when idle.
+ * Slim Google Drive-style right-edge vertical fast-scroll handle + dark page pill ("1/70").
+ * Appears only while scrolling or dragging, and fades away smoothly after ~2.5s.
  */
 @Composable
-private fun PremiumVerticalPageScrubber(
+private fun GoogleDriveVerticalScrubber(
     visible: Boolean,
     currentPage: Int,
     pageCount: Int,
     isDragging: Boolean,
     onDragStateChanged: (Boolean) -> Unit,
     onScrubToPage: (Int) -> Unit,
-    onTapPageBubble: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     AnimatedVisibility(
         visible = visible,
-        enter = fadeIn(tween(150)),
-        exit = fadeOut(tween(320)),
+        enter = fadeIn(tween(140)),
+        exit = fadeOut(tween(300)),
         modifier = modifier
     ) {
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxHeight()
-                .width(124.dp),
+                .width(108.dp),
             contentAlignment = Alignment.TopEnd
         ) {
             val density = LocalDensity.current
-            val thumbHeightDp = 46.dp
+            val thumbHeightDp = 42.dp
             val thumbHeightPx = with(density) { thumbHeightDp.toPx() }
             val trackHeightPx = (constraints.maxHeight.toFloat() - thumbHeightPx).coerceAtLeast(1f)
 
@@ -931,37 +757,33 @@ private fun PremiumVerticalPageScrubber(
 
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .offset { IntOffset(0, thumbOffsetYPx) }
-                    .padding(end = 2.dp)
+                modifier = Modifier.offset { IntOffset(0, thumbOffsetYPx) }
             ) {
-                // Floating page indicator bubble (e.g. "3 / 6")
+                // Compact dark page pill ("1/70")
                 Surface(
-                    shape = RoundedCornerShape(20.dp),
-                    color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.92f),
-                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
-                    shadowElevation = 6.dp,
-                    modifier = Modifier
-                        .padding(end = 8.dp)
-                        .clickable(onClick = onTapPageBubble)
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xE626282E),
+                    contentColor = Color.White,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier.padding(end = 6.dp)
                 ) {
                     Text(
-                        text = "${currentPage + 1} / $pageCount",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        text = "${currentPage + 1}/$pageCount",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
 
-                // Sleek right-edge vertical drag handle
+                // Slim dark right-edge circular/half-pill drag thumb with up/down chevrons
                 Surface(
-                    shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f),
-                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    shape = RoundedCornerShape(topStart = 21.dp, bottomStart = 21.dp),
+                    color = Color(0xF02B2D33),
+                    contentColor = Color.White,
                     modifier = Modifier
-                        .width(34.dp)
+                        .width(28.dp)
                         .height(thumbHeightDp)
-                        .shadow(6.dp, RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp))
+                        .shadow(4.dp, RoundedCornerShape(topStart = 21.dp, bottomStart = 21.dp))
                         .pointerInput(pageCount, trackHeightPx) {
                             detectVerticalDragGestures(
                                 onDragStart = {
@@ -980,10 +802,20 @@ private fun PremiumVerticalPageScrubber(
                             )
                         }
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                        modifier = Modifier.fillMaxSize()
+                    ) {
                         Icon(
-                            imageVector = Icons.Outlined.UnfoldMore,
-                            contentDescription = "Scroll pages"
+                            imageVector = Icons.Outlined.KeyboardArrowUp,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Icon(
+                            imageVector = Icons.Outlined.KeyboardArrowDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp)
                         )
                     }
                 }
@@ -992,64 +824,72 @@ private fun PremiumVerticalPageScrubber(
     }
 }
 
+/**
+ * Two-stage MuPDF page renderer:
+ * 1) Reserves exact page aspect ratio immediately so scrolling never jumps.
+ * 2) Renders fast low-res preview while scrolling, then sharpens immediately when stopped.
+ */
 @Composable
-private fun PdfPageTile(
+private fun SmoothPdfPageItem(
     pageIndex: Int,
-    renderWidthPx: Int,
-    rotationDegrees: Int,
+    fastWidthPx: Int,
+    crispWidthPx: Int,
+    isActivelyMoving: Boolean,
     canvasTheme: ReadingCanvasTheme,
     highlightBoxes: List<PdfSearchBox>,
+    aspectRatioProvider: suspend () -> Float,
     renderProvider: suspend (Int) -> Bitmap?
 ) {
-    var bitmap by remember(pageIndex, rotationDegrees, canvasTheme) { mutableStateOf<Bitmap?>(null) }
+    var aspectRatio by remember(pageIndex) { mutableFloatStateOf(0.707f) }
+    var bitmap by remember(pageIndex, canvasTheme) { mutableStateOf<Bitmap?>(null) }
 
-    LaunchedEffect(pageIndex, renderWidthPx, rotationDegrees, canvasTheme) {
-        bitmap = renderProvider(renderWidthPx)
+    LaunchedEffect(pageIndex) {
+        aspectRatio = aspectRatioProvider()
     }
 
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        tonalElevation = 1.dp,
-        shadowElevation = 2.dp
+    // Fast pass immediately on visibility
+    LaunchedEffect(pageIndex, canvasTheme) {
+        if (bitmap == null) {
+            bitmap = renderProvider(fastWidthPx)
+        }
+    }
+
+    // Crisp pass immediately when user stops scrolling
+    LaunchedEffect(pageIndex, canvasTheme, isActivelyMoving) {
+        if (!isActivelyMoving) {
+            val crisp = renderProvider(crispWidthPx)
+            if (crisp != null) bitmap = crisp
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(aspectRatio)
+            .background(if (canvasTheme == ReadingCanvasTheme.NIGHT_INVERTED) Color(0xFF14161A) else Color.White)
     ) {
         val bmp = bitmap
         if (bmp != null && !bmp.isRecycled) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(bmp.width.toFloat() / bmp.height.toFloat())
-            ) {
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = "PDF Page ${pageIndex + 1}",
-                    contentScale = ContentScale.FillBounds,
-                    modifier = Modifier.fillMaxSize()
-                )
-                if (highlightBoxes.isNotEmpty()) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        highlightBoxes.forEach { rawBox ->
-                            val box = PdfGeometryHelper.rotateNormalizedBox(rawBox, rotationDegrees)
-                            val left = box.leftNorm * size.width
-                            val top = box.topNorm * size.height
-                            val width = ((box.rightNorm - box.leftNorm) * size.width).coerceAtLeast(6f)
-                            val height = ((box.bottomNorm - box.topNorm) * size.height).coerceAtLeast(6f)
-                            drawRect(
-                                color = Color(0x66FFCA28),
-                                topLeft = Offset(left, top),
-                                size = Size(width, height)
-                            )
-                        }
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "Page ${pageIndex + 1}",
+                contentScale = ContentScale.FillBounds,
+                modifier = Modifier.fillMaxSize()
+            )
+            if (highlightBoxes.isNotEmpty()) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    highlightBoxes.forEach { box ->
+                        val left = box.leftNorm * size.width
+                        val top = box.topNorm * size.height
+                        val width = ((box.rightNorm - box.leftNorm) * size.width).coerceAtLeast(6f)
+                        val height = ((box.bottomNorm - box.topNorm) * size.height).coerceAtLeast(6f)
+                        drawRect(
+                            color = Color(0x66FFCA28),
+                            topLeft = Offset(left, top),
+                            size = Size(width, height)
+                        )
                     }
                 }
-            }
-        } else {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(420.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator()
             }
         }
     }
@@ -1093,10 +933,19 @@ private fun ThumbnailGridItem(
                     .height(120.dp),
                 contentAlignment = Alignment.Center
             ) {
-                CircularProgressIndicator()
+                CircularProgressIndicator(modifier = Modifier.size(20.dp))
             }
         }
         Spacer(Modifier.height(4.dp))
         Text("Page ${pageIndex + 1}", style = MaterialTheme.typography.labelSmall)
     }
+}
+
+private fun sharePdfUri(context: android.content.Context, uriString: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "application/pdf"
+        putExtra(Intent.EXTRA_STREAM, Uri.parse(uriString))
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Share PDF"))
 }

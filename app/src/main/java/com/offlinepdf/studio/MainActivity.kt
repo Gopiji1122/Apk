@@ -7,6 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -42,7 +43,12 @@ class MainActivity : AppCompatActivity() {
                 else -> ThemeMode.SYSTEM
             }
             OfflinePdfStudioTheme(themeMode = themeMode) {
-                StudioNavHost(initialDocumentUri = externalPdfUri)
+                key(externalPdfUri) {
+                    StudioNavHost(
+                        initialDocumentUri = externalPdfUri,
+                        onExitExternalViewer = { finish() }
+                    )
+                }
             }
         }
     }

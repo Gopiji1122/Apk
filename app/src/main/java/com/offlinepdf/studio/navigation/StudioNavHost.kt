@@ -1,6 +1,7 @@
 package com.offlinepdf.studio.navigation
 
 import android.util.Base64
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -18,7 +19,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -33,6 +33,7 @@ import androidx.navigation.navArgument
 import com.offlinepdf.studio.R
 import com.offlinepdf.studio.feature.files.FilesScreen
 import com.offlinepdf.studio.feature.home.HomeScreen
+import com.offlinepdf.studio.feature.reader.PdfEditorScreen
 import com.offlinepdf.studio.feature.reader.PdfReaderScreen
 import com.offlinepdf.studio.feature.scanner.ScannerScreen
 import com.offlinepdf.studio.feature.settings.SettingsScreen
@@ -51,7 +52,9 @@ private enum class TopDestination(
     SETTINGS("settings", R.string.nav_settings, Icons.Outlined.Settings)
 }
 
+private const val EXTERNAL_READER_ROUTE = "external_reader"
 private const val READER_ROUTE = "reader/{uriB64}"
+private const val EDITOR_ROUTE = "editor/{uriB64}"
 
 private fun encodeUriB64(uriString: String): String =
     Base64.encodeToString(
@@ -66,22 +69,24 @@ private fun decodeUriB64(encoded: String): String =
     )
 
 @Composable
-fun StudioNavHost(initialDocumentUri: String? = null) {
+fun StudioNavHost(
+    initialDocumentUri: String? = null,
+    onExitExternalViewer: () -> Unit = {}
+) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
 
-    val showBottomBar = TopDestination.entries.any { it.route == currentRoute }
+    val isExternalLaunch = !initialDocumentUri.isNullOrBlank()
+    val startDestination = if (isExternalLaunch) EXTERNAL_READER_ROUTE else TopDestination.HOME.route
+    val showBottomBar = !isExternalLaunch && TopDestination.entries.any { it.route == currentRoute }
 
-    fun openReader(uriString: String) {
-        val encoded = encodeUriB64(uriString)
-        navController.navigate("reader/$encoded")
+    fun openReaderInApp(uriString: String) {
+        navController.navigate("reader/${encodeUriB64(uriString)}")
     }
 
-    LaunchedEffect(initialDocumentUri) {
-        if (!initialDocumentUri.isNullOrBlank()) {
-            openReader(initialDocumentUri)
-        }
+    fun openEditor(uriString: String) {
+        navController.navigate("editor/${encodeUriB64(uriString)}")
     }
 
     Scaffold(
@@ -110,21 +115,29 @@ fun StudioNavHost(initialDocumentUri: String? = null) {
     ) { innerPadding ->
         NavHost(
             navController = navController,
-            startDestination = TopDestination.HOME.route,
-            modifier = Modifier.padding(innerPadding),
-            enterTransition = { fadeIn(animationSpec = tween(220)) },
-            exitTransition = { fadeOut(animationSpec = tween(180)) }
+            startDestination = startDestination,
+            modifier = if (showBottomBar) Modifier.padding(innerPadding) else Modifier,
+            enterTransition = { fadeIn(animationSpec = tween(200)) },
+            exitTransition = { fadeOut(animationSpec = tween(160)) }
         ) {
+            composable(EXTERNAL_READER_ROUTE) {
+                BackHandler { onExitExternalViewer() }
+                PdfReaderScreen(
+                    uriString = initialDocumentUri.orEmpty(),
+                    onBack = onExitExternalViewer,
+                    onOpenEditor = ::openEditor
+                )
+            }
             composable(TopDestination.HOME.route) {
                 HomeScreen(
-                    onOpenDocument = ::openReader,
+                    onOpenDocument = ::openReaderInApp,
                     onNavigateToFiles = { navController.navigate(TopDestination.FILES.route) },
                     onNavigateToScanner = { navController.navigate(TopDestination.SCAN.route) },
                     onNavigateToTools = { navController.navigate(TopDestination.TOOLS.route) }
                 )
             }
             composable(TopDestination.FILES.route) {
-                FilesScreen(onOpenDocument = ::openReader)
+                FilesScreen(onOpenDocument = ::openReaderInApp)
             }
             composable(TopDestination.SCAN.route) {
                 ScannerScreen()
@@ -138,18 +151,32 @@ fun StudioNavHost(initialDocumentUri: String? = null) {
             composable(
                 route = READER_ROUTE,
                 arguments = listOf(navArgument("uriB64") { type = NavType.StringType }),
-                enterTransition = {
-                    slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(240))
-                },
-                exitTransition = {
-                    slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(200))
-                }
+                enterTransition = { fadeIn(tween(180)) },
+                exitTransition = { fadeOut(tween(150)) }
             ) { entry ->
                 val encoded = entry.arguments?.getString("uriB64").orEmpty()
                 val decodedUri = runCatching { decodeUriB64(encoded) }.getOrDefault("")
                 PdfReaderScreen(
                     uriString = decodedUri,
-                    onBack = { navController.popBackStack() }
+                    onBack = { navController.popBackStack() },
+                    onOpenEditor = ::openEditor
+                )
+            }
+            composable(
+                route = EDITOR_ROUTE,
+                arguments = listOf(navArgument("uriB64") { type = NavType.StringType }),
+                enterTransition = {
+                    slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(220))
+                },
+                exitTransition = {
+                    slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(180))
+                }
+            ) { entry ->
+                val encoded = entry.arguments?.getString("uriB64").orEmpty()
+                val decodedUri = runCatching { decodeUriB64(encoded) }.getOrDefault("")
+                PdfEditorScreen(
+                    uriString = decodedUri,
+                    onBackToViewer = { navController.popBackStack() }
                 )
             }
         }
