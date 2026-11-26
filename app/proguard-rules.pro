@@ -1,1 +1,5 @@
 -keep class com.tom_roush.pdfbox.** { *; }
+-keep class com.tom_roush.fontbox.** { *; }
+-keep class com.tom_roush.harmony.** { *; }
+-dontwarn org.bouncycastle.**
+-dontwarn org.apache.commons.logging.**
