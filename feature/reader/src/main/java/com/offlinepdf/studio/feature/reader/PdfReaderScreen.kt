@@ -5,6 +5,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -14,20 +17,29 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachPointerEventScope
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -37,6 +49,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -56,7 +69,9 @@ import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.RotateRight
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Tag
 import androidx.compose.material.icons.outlined.TextFields
+import androidx.compose.material.icons.outlined.UnfoldMore
 import androidx.compose.material.icons.outlined.ViewCarousel
 import androidx.compose.material.icons.outlined.ViewColumn
 import androidx.compose.material.icons.outlined.ViewDay
@@ -65,20 +80,19 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -87,19 +101,25 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -107,8 +127,10 @@ import com.offlinepdf.studio.core.pdf.PdfGeometryHelper
 import com.offlinepdf.studio.core.pdf.PdfSearchBox
 import com.offlinepdf.studio.core.pdf.ReadingCanvasTheme
 import com.offlinepdf.studio.core.pdf.ReadingLayoutMode
-import com.offlinepdf.studio.core.pdf.ZoomPreset
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -138,12 +160,40 @@ fun PdfReaderScreen(
     var goToPageInput by remember { mutableStateOf("") }
     var passwordInput by remember { mutableStateOf("") }
 
-    var scale by remember(state.zoomPreset) { mutableFloatStateOf(state.zoomPreset.scaleMultiplier) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
+    // Smooth pinch-to-zoom & pan state
+    val scaleAnim = remember { Animatable(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+    var viewportSize by remember { mutableStateOf(IntSize.Zero) }
 
-    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
-        scale = (scale * zoomChange).coerceIn(0.75f, 4.5f)
-        offset = if (scale > 1.02f) offset + panChange else Offset.Zero
+    // Premium auto-hiding vertical scrollbar visibility
+    var isDraggingScrollbar by remember { mutableStateOf(false) }
+    var scrollbarVisible by remember { mutableStateOf(false) }
+
+    val isScrolling by remember {
+        derivedStateOf {
+            verticalListState.isScrollInProgress ||
+                spreadListState.isScrollInProgress ||
+                pagerState.isScrollInProgress
+        }
+    }
+
+    LaunchedEffect(isScrolling, isDraggingScrollbar) {
+        if (isScrolling || isDraggingScrollbar) {
+            scrollbarVisible = true
+        } else {
+            delay(1600)
+            scrollbarVisible = false
+        }
+    }
+
+    fun clampOffsets(newScale: Float, rawX: Float, rawY: Float): Pair<Float, Float> {
+        if (newScale <= 1.01f || viewportSize.width == 0 || viewportSize.height == 0) {
+            return 0f to 0f
+        }
+        val maxX = (viewportSize.width * (newScale - 1f)) / 2f
+        val maxY = (viewportSize.height * (newScale - 1f)) / 2f
+        return rawX.coerceIn(-maxX, maxX) to rawY.coerceIn(-maxY, maxY)
     }
 
     fun jumpToPage(pageIndex: Int) {
@@ -162,14 +212,12 @@ fun PdfReaderScreen(
         viewModel.openUri(uriString)
     }
 
-    // Resume saved reading position on first load
     LaunchedEffect(state.pageCount, state.initialResumePage) {
         if (state.pageCount > 0 && state.initialResumePage > 0) {
             jumpToPage(state.initialResumePage)
         }
     }
 
-    // Sync visible page index back to ViewModel
     LaunchedEffect(verticalListState.firstVisibleItemIndex, state.layoutMode, state.pageCount) {
         if (state.layoutMode == ReadingLayoutMode.CONTINUOUS_VERTICAL && state.pageCount > 0) {
             viewModel.onPageChanged(verticalListState.firstVisibleItemIndex)
@@ -188,18 +236,266 @@ fun PdfReaderScreen(
 
     val canvasBackground = when (state.canvasTheme) {
         ReadingCanvasTheme.LIGHT -> MaterialTheme.colorScheme.surfaceVariant
-        ReadingCanvasTheme.DARK_CANVAS -> Color(0xFF181C24)
-        ReadingCanvasTheme.NIGHT_INVERTED -> Color(0xFF0A0D12)
+        ReadingCanvasTheme.DARK_CANVAS -> Color(0xFF141820)
+        ReadingCanvasTheme.NIGHT_INVERTED -> Color(0xFF07090D)
     }
 
-    Scaffold(
-        topBar = {
-            AnimatedVisibility(
-                visible = state.controlsVisible,
-                enter = slideInVertically { -it } + fadeIn(),
-                exit = slideOutVertically { -it } + fadeOut()
+    // Full-screen edge-to-edge Box: PDF occupies 100% of screen; TopBar floats cleanly above and auto-hides on tap
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(canvasBackground)
+            .onSizeChanged { viewportSize = it }
+    ) {
+        // 1. Main Full-Screen PDF Canvas with buttery-smooth custom pinch-zoom & pan
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTapGestures(
+                        onTap = { viewModel.toggleControlsVisibility() },
+                        onDoubleTap = { tapOffset ->
+                            scope.launch {
+                                if (scaleAnim.value > 1.25f) {
+                                    offsetX = 0f
+                                    offsetY = 0f
+                                    scaleAnim.animateTo(
+                                        1f,
+                                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                                    )
+                                } else {
+                                    val targetScale = 2.4f
+                                    val centerX = viewportSize.width / 2f
+                                    val centerY = viewportSize.height / 2f
+                                    val desiredX = (centerX - tapOffset.x) * (targetScale - 1f)
+                                    val desiredY = (centerY - tapOffset.y) * (targetScale - 1f)
+                                    val (cx, cy) = clampOffsets(targetScale, desiredX, desiredY)
+                                    offsetX = cx
+                                    offsetY = cy
+                                    scaleAnim.animateTo(
+                                        targetScale,
+                                        animationSpec = tween(220, easing = FastOutSlowInEasing)
+                                    )
+                                }
+                            }
+                        }
+                    )
+                }
+                .pointerInput(Unit) {
+                    awaitEachPointerEventScope {
+                        while (true) {
+                            awaitFirstDown(requireUnconsumed = false)
+                            do {
+                                val event = awaitPointerEvent()
+                                val activePointers = event.changes.count { it.pressed }
+                                if (activePointers >= 2) {
+                                    val zoomChange = event.calculateZoom()
+                                    val panChange = event.calculatePan()
+                                    val centroid = event.calculateCentroid(useCurrent = true)
+                                    val oldScale = scaleAnim.value
+                                    val newScale = (oldScale * zoomChange).coerceIn(1f, 5f)
+                                    val scaleFactor = if (oldScale > 0f) newScale / oldScale else 1f
+
+                                    val centerX = viewportSize.width / 2f
+                                    val centerY = viewportSize.height / 2f
+                                    val focalX = centroid.x - centerX
+                                    val focalY = centroid.y - centerY
+
+                                    val rawX = (offsetX - focalX) * scaleFactor + focalX + panChange.x
+                                    val rawY = (offsetY - focalY) * scaleFactor + focalY + panChange.y
+                                    val (cx, cy) = clampOffsets(newScale, rawX, rawY)
+
+                                    scope.launch { scaleAnim.snapTo(newScale) }
+                                    offsetX = cx
+                                    offsetY = cy
+
+                                    event.changes.forEach { change ->
+                                        if (change.positionChanged()) change.consume()
+                                    }
+                                } else if (activePointers == 1 && scaleAnim.value > 1.03f) {
+                                    // Smooth horizontal + vertical pan when zoomed in, while still
+                                    // allowing vertical LazyColumn scrolling if user reaches top/bottom edge
+                                    val panChange = event.calculatePan()
+                                    val maxX = (viewportSize.width * (scaleAnim.value - 1f)) / 2f
+                                    val maxY = (viewportSize.height * (scaleAnim.value - 1f)) / 2f
+                                    val nextX = (offsetX + panChange.x).coerceIn(-maxX, maxX)
+                                    val nextY = (offsetY + panChange.y).coerceIn(-maxY, maxY)
+                                    val consumedHoriz = abs(nextX - offsetX) > 0.5f
+                                    val consumedVert = abs(nextY - offsetY) > 0.5f
+                                    offsetX = nextX
+                                    offsetY = nextY
+                                    if (consumedHoriz || consumedVert) {
+                                        event.changes.forEach { change ->
+                                            if (change.positionChanged()) change.consume()
+                                        }
+                                    }
+                                }
+                            } while (event.changes.any { it.pressed })
+                        }
+                    }
+                },
+            contentAlignment = Alignment.Center
+        ) {
+            when {
+                state.isLoading -> CircularProgressIndicator()
+                state.errorMessage != null -> {
+                    Text(
+                        text = state.errorMessage ?: "Error loading PDF",
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(24.dp)
+                    )
+                }
+                state.pageCount > 0 -> {
+                    val screenWidthPx = with(LocalDensity.current) {
+                        LocalConfiguration.current.screenWidthDp.dp.toPx().toInt()
+                    }
+                    // Sharper high-DPI rendering for crisp pinch-to-zoom text
+                    val renderWidth = (screenWidthPx * 1.8f).toInt().coerceAtMost(2200)
+                    val currentScale = scaleAnim.value
+                    val zoomModifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer(
+                            scaleX = currentScale,
+                            scaleY = currentScale,
+                            translationX = offsetX,
+                            translationY = offsetY
+                        )
+
+                    when (state.layoutMode) {
+                        ReadingLayoutMode.CONTINUOUS_VERTICAL -> {
+                            LazyColumn(
+                                state = verticalListState,
+                                modifier = zoomModifier,
+                                contentPadding = PaddingValues(
+                                    top = if (state.controlsVisible) 88.dp else 8.dp,
+                                    bottom = 24.dp,
+                                    start = 4.dp,
+                                    end = 4.dp
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(state.pageCount, key = { it }) { pageIndex ->
+                                    PdfPageTile(
+                                        pageIndex = pageIndex,
+                                        renderWidthPx = renderWidth,
+                                        rotationDegrees = state.rotationDegrees,
+                                        canvasTheme = state.canvasTheme,
+                                        highlightBoxes = state.searchBoxesByPage[pageIndex].orEmpty(),
+                                        renderProvider = { viewModel.renderPage(pageIndex, it) }
+                                    )
+                                }
+                            }
+                        }
+                        ReadingLayoutMode.SINGLE_PAGE_HORIZONTAL -> {
+                            HorizontalPager(
+                                state = pagerState,
+                                modifier = zoomModifier,
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 8.dp),
+                                pageSpacing = 8.dp
+                            ) { pageIndex ->
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    PdfPageTile(
+                                        pageIndex = pageIndex,
+                                        renderWidthPx = renderWidth,
+                                        rotationDegrees = state.rotationDegrees,
+                                        canvasTheme = state.canvasTheme,
+                                        highlightBoxes = state.searchBoxesByPage[pageIndex].orEmpty(),
+                                        renderProvider = { viewModel.renderPage(pageIndex, it) }
+                                    )
+                                }
+                            }
+                        }
+                        ReadingLayoutMode.TWO_PAGE_SPREAD -> {
+                            val spreadCount = (state.pageCount + 1) / 2
+                            LazyColumn(
+                                state = spreadListState,
+                                modifier = zoomModifier,
+                                contentPadding = PaddingValues(
+                                    top = if (state.controlsVisible) 88.dp else 8.dp,
+                                    bottom = 24.dp,
+                                    start = 4.dp,
+                                    end = 4.dp
+                                ),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                items(spreadCount, key = { it }) { spreadIdx ->
+                                    val leftPage = spreadIdx * 2
+                                    val rightPage = leftPage + 1
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            PdfPageTile(
+                                                pageIndex = leftPage,
+                                                renderWidthPx = renderWidth / 2,
+                                                rotationDegrees = state.rotationDegrees,
+                                                canvasTheme = state.canvasTheme,
+                                                highlightBoxes = state.searchBoxesByPage[leftPage].orEmpty(),
+                                                renderProvider = { viewModel.renderPage(leftPage, it) }
+                                            )
+                                        }
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            if (rightPage < state.pageCount) {
+                                                PdfPageTile(
+                                                    pageIndex = rightPage,
+                                                    renderWidthPx = renderWidth / 2,
+                                                    rotationDegrees = state.rotationDegrees,
+                                                    canvasTheme = state.canvasTheme,
+                                                    highlightBoxes = state.searchBoxesByPage[rightPage].orEmpty(),
+                                                    renderProvider = { viewModel.renderPage(rightPage, it) }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Premium Google Drive–Style Vertical Fast-Scroll Handle (appears ONLY while scrolling/dragging)
+        if (state.pageCount > 1) {
+            PremiumVerticalPageScrubber(
+                visible = scrollbarVisible || isDraggingScrollbar,
+                currentPage = state.currentPage,
+                pageCount = state.pageCount,
+                isDragging = isDraggingScrollbar,
+                onDragStateChanged = { dragging -> isDraggingScrollbar = dragging },
+                onScrubToPage = { target -> jumpToPage(target) },
+                onTapPageBubble = {
+                    goToPageInput = (state.currentPage + 1).toString()
+                    showGoToPageDialog = true
+                },
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(top = 80.dp, bottom = 28.dp)
+            )
+        }
+
+        // 3. Floating Top App Bar + Search Bar (toggles smoothly on single tap for true full-screen reading)
+        AnimatedVisibility(
+            visible = state.controlsVisible,
+            enter = slideInVertically { -it } + fadeIn(tween(180)),
+            exit = slideOutVertically { -it } + fadeOut(tween(180)),
+            modifier = Modifier.align(Alignment.TopCenter)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.94f))
             ) {
                 TopAppBar(
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent
+                    ),
                     title = {
                         Column {
                             Text(
@@ -242,6 +538,15 @@ fun PdfReaderScreen(
                                 expanded = showOverflowMenu,
                                 onDismissRequest = { showOverflowMenu = false }
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text("Go to Page...") },
+                                    leadingIcon = { Icon(Icons.Outlined.Tag, null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        goToPageInput = (state.currentPage + 1).toString()
+                                        showGoToPageDialog = true
+                                    }
+                                )
                                 DropdownMenuItem(
                                     text = { Text("Continuous Vertical") },
                                     leadingIcon = { Icon(Icons.Outlined.ViewDay, null) },
@@ -310,221 +615,32 @@ fun PdfReaderScreen(
                         }
                     }
                 )
-            }
-        },
-        bottomBar = {
-            AnimatedVisibility(
-                visible = state.controlsVisible && state.pageCount > 0,
-                enter = slideInVertically { it } + fadeIn(),
-                exit = slideOutVertically { it } + fadeOut()
-            ) {
-                Surface(tonalElevation = 4.dp) {
-                    Column(
+
+                AnimatedVisibility(visible = showSearchBar) {
+                    Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            FilterChip(
-                                selected = state.zoomPreset == ZoomPreset.FIT_WIDTH,
-                                onClick = { viewModel.setZoomPreset(ZoomPreset.FIT_WIDTH); offset = Offset.Zero },
-                                label = { Text("Fit Width") }
-                            )
-                            FilterChip(
-                                selected = state.zoomPreset == ZoomPreset.FIT_PAGE,
-                                onClick = { viewModel.setZoomPreset(ZoomPreset.FIT_PAGE); offset = Offset.Zero },
-                                label = { Text("Fit Page") }
-                            )
-                            FilterChip(
-                                selected = state.zoomPreset == ZoomPreset.ACTUAL_SIZE,
-                                onClick = { viewModel.setZoomPreset(ZoomPreset.ACTUAL_SIZE) },
-                                label = { Text("100%") }
-                            )
-                            Spacer(Modifier.weight(1f))
-                            TextButton(onClick = {
-                                goToPageInput = (state.currentPage + 1).toString()
-                                showGoToPageDialog = true
-                            }) {
-                                Text("${state.currentPage + 1}/${state.pageCount}")
-                            }
-                        }
-                        if (state.pageCount > 1) {
-                            Slider(
-                                value = state.currentPage.toFloat(),
-                                onValueChange = { jumpToPage(it.toInt()) },
-                                valueRange = 0f..(state.pageCount - 1).toFloat(),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            AnimatedVisibility(visible = showSearchBar && state.controlsVisible) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    OutlinedTextField(
-                        value = state.searchQuery,
-                        onValueChange = viewModel::searchText,
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        placeholder = { Text("Search text in PDF...") }
-                    )
-                    if (state.searchHits.isNotEmpty()) {
-                        Text(
-                            text = "${state.activeHitIndex + 1}/${state.searchHits.size}",
-                            style = MaterialTheme.typography.labelMedium
+                        OutlinedTextField(
+                            value = state.searchQuery,
+                            onValueChange = viewModel::searchText,
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            placeholder = { Text("Search text in PDF...") }
                         )
-                        IconButton(onClick = { viewModel.selectPreviousHit()?.let(::jumpToPage) }) {
-                            Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "Previous match")
-                        }
-                        IconButton(onClick = { viewModel.selectNextHit()?.let(::jumpToPage) }) {
-                            Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "Next match")
-                        }
-                    }
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(canvasBackground)
-                    .transformable(state = transformState)
-                    .pointerInput(Unit) {
-                        detectTapGestures(
-                            onTap = { viewModel.toggleControlsVisibility() },
-                            onDoubleTap = {
-                                if (scale > 1.25f) {
-                                    scale = 1f
-                                    offset = Offset.Zero
-                                } else {
-                                    scale = 2.25f
-                                }
-                            }
-                        )
-                    },
-                contentAlignment = Alignment.Center
-            ) {
-                when {
-                    state.isLoading -> CircularProgressIndicator()
-                    state.errorMessage != null -> {
-                        Text(
-                            text = state.errorMessage ?: "Error loading PDF",
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(24.dp)
-                        )
-                    }
-                    state.pageCount > 0 -> {
-                        val screenWidthPx = with(LocalDensity.current) {
-                            LocalConfiguration.current.screenWidthDp.dp.toPx().toInt()
-                        }
-                        val renderWidth = (screenWidthPx * 1.4f).toInt()
-                        val zoomModifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer(
-                                scaleX = scale,
-                                scaleY = scale,
-                                translationX = offset.x,
-                                translationY = offset.y
+                        if (state.searchHits.isNotEmpty()) {
+                            Text(
+                                text = "${state.activeHitIndex + 1}/${state.searchHits.size}",
+                                style = MaterialTheme.typography.labelMedium
                             )
-
-                        when (state.layoutMode) {
-                            ReadingLayoutMode.CONTINUOUS_VERTICAL -> {
-                                LazyColumn(
-                                    state = verticalListState,
-                                    modifier = zoomModifier,
-                                    contentPadding = PaddingValues(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    items(state.pageCount, key = { it }) { pageIndex ->
-                                        PdfPageTile(
-                                            pageIndex = pageIndex,
-                                            renderWidthPx = renderWidth,
-                                            rotationDegrees = state.rotationDegrees,
-                                            canvasTheme = state.canvasTheme,
-                                            highlightBoxes = state.searchBoxesByPage[pageIndex].orEmpty(),
-                                            renderProvider = { viewModel.renderPage(pageIndex, it) }
-                                        )
-                                    }
-                                }
+                            IconButton(onClick = { viewModel.selectPreviousHit()?.let(::jumpToPage) }) {
+                                Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "Previous match")
                             }
-                            ReadingLayoutMode.SINGLE_PAGE_HORIZONTAL -> {
-                                HorizontalPager(
-                                    state = pagerState,
-                                    modifier = zoomModifier,
-                                    contentPadding = PaddingValues(12.dp),
-                                    pageSpacing = 12.dp
-                                ) { pageIndex ->
-                                    Box(
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        PdfPageTile(
-                                            pageIndex = pageIndex,
-                                            renderWidthPx = renderWidth,
-                                            rotationDegrees = state.rotationDegrees,
-                                            canvasTheme = state.canvasTheme,
-                                            highlightBoxes = state.searchBoxesByPage[pageIndex].orEmpty(),
-                                            renderProvider = { viewModel.renderPage(pageIndex, it) }
-                                        )
-                                    }
-                                }
-                            }
-                            ReadingLayoutMode.TWO_PAGE_SPREAD -> {
-                                val spreadCount = (state.pageCount + 1) / 2
-                                LazyColumn(
-                                    state = spreadListState,
-                                    modifier = zoomModifier,
-                                    contentPadding = PaddingValues(10.dp),
-                                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                                ) {
-                                    items(spreadCount, key = { it }) { spreadIdx ->
-                                        val leftPage = spreadIdx * 2
-                                        val rightPage = leftPage + 1
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
-                                            Box(modifier = Modifier.weight(1f)) {
-                                                PdfPageTile(
-                                                    pageIndex = leftPage,
-                                                    renderWidthPx = renderWidth / 2,
-                                                    rotationDegrees = state.rotationDegrees,
-                                                    canvasTheme = state.canvasTheme,
-                                                    highlightBoxes = state.searchBoxesByPage[leftPage].orEmpty(),
-                                                    renderProvider = { viewModel.renderPage(leftPage, it) }
-                                                )
-                                            }
-                                            Box(modifier = Modifier.weight(1f)) {
-                                                if (rightPage < state.pageCount) {
-                                                    PdfPageTile(
-                                                        pageIndex = rightPage,
-                                                        renderWidthPx = renderWidth / 2,
-                                                        rotationDegrees = state.rotationDegrees,
-                                                        canvasTheme = state.canvasTheme,
-                                                        highlightBoxes = state.searchBoxesByPage[rightPage].orEmpty(),
-                                                        renderProvider = { viewModel.renderPage(rightPage, it) }
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                            IconButton(onClick = { viewModel.selectNextHit()?.let(::jumpToPage) }) {
+                                Icon(Icons.Outlined.KeyboardArrowDown, contentDescription = "Next match")
                             }
                         }
                     }
@@ -769,6 +885,113 @@ fun PdfReaderScreen(
     }
 }
 
+/**
+ * Premium Google Drive–style vertical fast-scroll handle with floating page indicator pill.
+ * Only appears while scrolling or dragging, and smoothly fades out when idle.
+ */
+@Composable
+private fun PremiumVerticalPageScrubber(
+    visible: Boolean,
+    currentPage: Int,
+    pageCount: Int,
+    isDragging: Boolean,
+    onDragStateChanged: (Boolean) -> Unit,
+    onScrubToPage: (Int) -> Unit,
+    onTapPageBubble: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(150)),
+        exit = fadeOut(tween(320)),
+        modifier = modifier
+    ) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width(124.dp),
+            contentAlignment = Alignment.TopEnd
+        ) {
+            val density = LocalDensity.current
+            val thumbHeightDp = 46.dp
+            val thumbHeightPx = with(density) { thumbHeightDp.toPx() }
+            val trackHeightPx = (constraints.maxHeight.toFloat() - thumbHeightPx).coerceAtLeast(1f)
+
+            val fraction = if (pageCount > 1) {
+                currentPage.toFloat() / (pageCount - 1).toFloat()
+            } else 0f
+
+            var dragFraction by remember { mutableFloatStateOf(fraction) }
+            LaunchedEffect(fraction, isDragging) {
+                if (!isDragging) dragFraction = fraction
+            }
+
+            val effectiveFraction = if (isDragging) dragFraction else fraction
+            val thumbOffsetYPx = (effectiveFraction * trackHeightPx).roundToInt()
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .offset { IntOffset(0, thumbOffsetYPx) }
+                    .padding(end = 2.dp)
+            ) {
+                // Floating page indicator bubble (e.g. "3 / 6")
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.92f),
+                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                    shadowElevation = 6.dp,
+                    modifier = Modifier
+                        .padding(end = 8.dp)
+                        .clickable(onClick = onTapPageBubble)
+                ) {
+                    Text(
+                        text = "${currentPage + 1} / $pageCount",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+
+                // Sleek right-edge vertical drag handle
+                Surface(
+                    shape = RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.96f),
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier
+                        .width(34.dp)
+                        .height(thumbHeightDp)
+                        .shadow(6.dp, RoundedCornerShape(topStart = 24.dp, bottomStart = 24.dp))
+                        .pointerInput(pageCount, trackHeightPx) {
+                            detectVerticalDragGestures(
+                                onDragStart = {
+                                    onDragStateChanged(true)
+                                    dragFraction = fraction
+                                },
+                                onDragEnd = { onDragStateChanged(false) },
+                                onDragCancel = { onDragStateChanged(false) },
+                                onVerticalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    val next = (dragFraction + (dragAmount / trackHeightPx)).coerceIn(0f, 1f)
+                                    dragFraction = next
+                                    val targetPage = (next * (pageCount - 1)).roundToInt()
+                                    onScrubToPage(targetPage)
+                                }
+                            )
+                        }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Outlined.UnfoldMore,
+                            contentDescription = "Scroll pages"
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun PdfPageTile(
     pageIndex: Int,
@@ -786,7 +1009,7 @@ private fun PdfPageTile(
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
-        tonalElevation = 2.dp,
+        tonalElevation = 1.dp,
         shadowElevation = 2.dp
     ) {
         val bmp = bitmap
