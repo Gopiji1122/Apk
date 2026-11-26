@@ -1,22 +1,16 @@
-# Aura PDF Editor (v2.0.0)
+# Aura PDF Editor v5.0.0 — Adobe Acrobat-Style Offline PDF Studio
 
-**App ID:** `com.aurapdf.editor`  
-**Version:** `2.0.0` (`versionCode = 1`)  
-**Min Android:** Android 5.0 (API 21) to Android 16+  
-**Architecture:** 100% Offline, Zero Servers, Zero Paid SDKs
+100% Free, Ad-Free, Offline Android PDF Editor (`com.aurapdf.editor`, `versionCode = 5`).
 
-## Features
-- **Zero-Lag PDF Reader:** Native `PdfRenderer` with `LruCache` + coroutine background rendering, pinch-to-zoom, true Night Mode (color inversion), in-PDF text search, and external `ACTION_VIEW` support.
-- **Page Organizer:** Visual thumbnail grid to rotate, reorder, and delete pages.
-- **Complete Offline Tools:** Merge PDFs, Split/Extract page ranges, Photos-to-PDF, Compress PDF (Strong / Balanced / Light), AES-128 Password Lock & Unlock, and Diagonal Watermark.
-- **Markup & Signature Pad:** Freehand Pen, Semi-Transparent Highlighter, Text Box annotations, Undo, and Finger Signature Pad.
-- **Offline OCR & Scanner:** Google ML Kit Document Scanner (auto-crop camera) and Offline OCR text extraction with 1-tap copy, plus Export Pages to PNG, Save to Downloads, and Share.
-
-## Quick Build on GitHub Actions
-1. Create a new GitHub repository and upload everything inside `Aura-PDF-Editor/` (including `.github/workflows/build-apk.yml`).
-2. Open the **Actions** tab — **Aura PDF Editor CI & Build** runs automatically.
-3. Download **Aura-PDF-Editor-v2.0.0-Debug-APK** from **Artifacts** to test immediately.
-4. For official signed updates & creator protection, follow `CREATOR_SIGNING_GUIDE.md`.
-
-## New in 2.0
-Premium redesign (gradient hero, staggered card animations, animated screen transitions) plus: Word/Excel/TXT to PDF, page numbers, status stamps, crop pages, insert blank page, flatten forms, export text.
+## Key Upgrades in v5.0.0
+- **Authentic Adobe Acrobat Visuals & Color-Coded Icons:** Signature red accent, real Page 1 PDF thumbnails on Recent Files, Starred/Recent tabs, Search, and color-coded tool badges.
+- **Pro Document Scanner (ML Kit Document Scanner 16.0.0 + Manual Studio):**
+  - Real-time **Auto Scan** (edge detection + auto-snap) & **Manual Scan** toggle
+  - Interactive **4-Corner Perspective Crop**
+  - **Filters** (Auto Color, Grayscale, B&W Crisp, Lighten, Original), Rotate, Stain Clean, and direct **Edit PDF** handoff
+- **Complete Acrobat Pro Editor Modes Inside Every PDF:**
+  - **Edit PDF (Pink):** Add/re-edit styled text (10 colors, 3 fonts, Bold/Italic/Underline/Strikethrough/Highlight, clickable Links), insert JPG/PNG images (touch-drag move & corner-handle resize), **Whiteout**, and **Permanent Redact**.
+  - **Comment (Blue):** Live **Freehand Draw / Pen** directly on the PDF page, draggable **Highlight**, **Sticky Notes**, **Rectangles**, and **Lines**.
+  - **Fill & Sign (Purple):** Hand-drawn signature (Black/Blue/Red ink), **Digital Signature Certificate + SHA-256**, Checkmark (`X`), Today's Date, and Form Fill text.
+  - **Organize (Teal):** Add Blank Page, Merge PDF, Rotate, Move Page Up, Delete Page, Split Range, Header/Footer/Page Numbers.
+  - **Top Bar & 3-Dot Menu (`⋮`):** Search Text in PDF, Offline **Read Aloud (TTS)**, Undo, Links Manager, Custom Watermark, Password Lock/Unlock, Offline ML Kit OCR, High/Balanced Compression, Export PNG/TXT, Document Properties, Night Mode, and Share.

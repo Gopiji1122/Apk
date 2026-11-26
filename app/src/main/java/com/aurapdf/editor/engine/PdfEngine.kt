@@ -2,11 +2,10 @@ package com.aurapdf.editor.engine
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Color
+import android.graphics.BitmapFactory
 import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import android.os.ParcelFileDescriptor
-import com.tom_roush.pdfbox.android.PDFBoxResourceLoader
 import com.tom_roush.pdfbox.multipdf.PDFMergerUtility
 import com.tom_roush.pdfbox.pdmodel.PDDocument
 import com.tom_roush.pdfbox.pdmodel.PDPage
@@ -18,539 +17,685 @@ import com.tom_roush.pdfbox.pdmodel.font.PDType1Font
 import com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.image.LosslessFactory
 import com.tom_roush.pdfbox.pdmodel.graphics.state.PDExtendedGraphicsState
+import com.tom_roush.pdfbox.pdmodel.interactive.action.PDActionURI
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDAnnotationLink
+import com.tom_roush.pdfbox.pdmodel.interactive.annotation.PDBorderStyleDictionary
 import com.tom_roush.pdfbox.text.PDFTextStripper
 import com.tom_roush.pdfbox.util.Matrix
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import android.util.Xml
-import org.xmlpull.v1.XmlPullParser
-import java.io.ByteArrayInputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.InputStream
-import java.util.zip.ZipInputStream
+import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+data class PdfLinkInfo(
+    val index: Int,
+    val pageIndex: Int,
+    val url: String
+)
+
+enum class TextFontStyle(val label: String) {
+    SANS("Sans"),
+    SERIF("Serif"),
+    MONO("Mono")
+}
+
+enum class OverlayKind {
+    TEXT,
+    IMAGE,
+    HIGHLIGHT,
+    WHITEOUT,
+    REDACT,
+    STICKY_NOTE,
+    SHAPE_RECT,
+    SHAPE_LINE
+}
+
+// Live Interactive Draft Overlay (touch-draggable, touch-resizable, re-editable until Save!)
+data class DraftOverlay(
+    val id: Long = System.nanoTime(),
+    val kind: OverlayKind = OverlayKind.TEXT,
+    val text: String = "",
+    val fontSizeSp: Float = 16f,
+    val fontStyle: TextFontStyle = TextFontStyle.SANS,
+    val isBold: Boolean = false,
+    val isItalic: Boolean = false,
+    val isUnderline: Boolean = false,
+    val isStrikethrough: Boolean = false,
+    val hasBgHighlight: Boolean = false,
+    val colorArgb: Long = 0xFF000000,
+    val linkUrl: String = "",
+    val imageBitmap: Bitmap? = null,
+    val xNorm: Float = 0.12f,
+    val yNorm: Float = 0.16f,
+    val wNorm: Float = 0.42f,
+    val hNorm: Float = 0.18f
+)
+
+// Freehand ink stroke in normalized 0..1 page coordinates
+data class InkStroke(
+    val points: List<Pair<Float, Float>>,
+    val colorArgb: Long = 0xFFD32F2F,
+    val strokeWidthPt: Float = 2.6f
+)
+
+data class PdfMetaInfo(
+    val title: String,
+    val author: String,
+    val subject: String,
+    val pageCount: Int
+)
 
 object PdfEngine {
 
-    fun init(context: Context) {
-        PDFBoxResourceLoader.init(context.applicationContext)
+    private fun sanitize(text: String): String {
+        val sb = StringBuilder()
+        for (ch in text) {
+            if (ch.code in 32..126) sb.append(ch) else sb.append(' ')
+        }
+        return sb.toString()
     }
 
-    suspend fun getPageCount(file: File): Int = withContext(Dispatchers.IO) {
-        ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-            PdfRenderer(pfd).use { renderer ->
-                renderer.pageCount
+    private fun saveInPlace(doc: PDDocument, file: File) {
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        doc.save(tmp)
+        doc.close()
+        if (file.exists()) file.delete()
+        tmp.renameTo(file)
+        file.setLastModified(System.currentTimeMillis())
+    }
+
+    private fun sha256Short(file: File): String {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buf = ByteArray(8192)
+            while (true) {
+                val r = input.read(buf)
+                if (r <= 0) break
+                md.update(buf, 0, r)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }.take(16).uppercase()
+    }
+
+    private fun resolveFont(style: TextFontStyle, bold: Boolean, italic: Boolean): PDType1Font {
+        return when (style) {
+            TextFontStyle.SANS -> when {
+                bold && italic -> PDType1Font.HELVETICA_BOLD_OBLIQUE
+                bold -> PDType1Font.HELVETICA_BOLD
+                italic -> PDType1Font.HELVETICA_OBLIQUE
+                else -> PDType1Font.HELVETICA
+            }
+            TextFontStyle.SERIF -> when {
+                bold && italic -> PDType1Font.TIMES_BOLD_ITALIC
+                bold -> PDType1Font.TIMES_BOLD
+                italic -> PDType1Font.TIMES_ITALIC
+                else -> PDType1Font.TIMES_ROMAN
+            }
+            TextFontStyle.MONO -> when {
+                bold && italic -> PDType1Font.COURIER_BOLD_OBLIQUE
+                bold -> PDType1Font.COURIER_BOLD
+                italic -> PDType1Font.COURIER_OBLIQUE
+                else -> PDType1Font.COURIER
             }
         }
     }
 
-    /** Merge multiple PDFs into one output file */
-    suspend fun mergePdfs(context: Context, uris: List<Uri>, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            val merger = PDFMergerUtility()
-            merger.destinationFileName = outputFile.absolutePath
-            val streams = uris.mapNotNull { context.contentResolver.openInputStream(it) }
-            try {
-                streams.forEach { merger.addSource(it) }
-                merger.mergeDocuments(null)
-            } finally {
-                streams.forEach { runCatching { it.close() } }
-            }
-            outputFile
+    fun createBlankPdf(file: File, pageSize: String = "A4", landscape: Boolean = false) {
+        val base = when (pageSize) {
+            "Letter" -> PDRectangle.LETTER
+            "Legal" -> PDRectangle.LEGAL
+            else -> PDRectangle.A4
         }
-
-    /** Split / extract a 1-based inclusive page range */
-    suspend fun splitPdf(inputFile: File, startPage: Int, endPage: Int, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile).use { source ->
-                PDDocument().use { target ->
-                    val safeStart = (startPage - 1).coerceIn(0, source.numberOfPages - 1)
-                    val safeEnd = (endPage - 1).coerceIn(safeStart, source.numberOfPages - 1)
-                    for (i in safeStart..safeEnd) {
-                        target.importPage(source.getPage(i))
-                    }
-                    target.save(outputFile)
-                }
-            }
-            outputFile
-        }
-
-    /** Reorder, rotate, and keep only selected pages in one fast pass */
-    suspend fun applyPageEdits(
-        inputFile: File,
-        pageSpecs: List<Pair<Int, Int>>,
-        outputFile: File
-    ): File = withContext(Dispatchers.IO) {
-        PDDocument.load(inputFile).use { source ->
-            PDDocument().use { target ->
-                for ((origIndex, extraRotation) in pageSpecs) {
-                    if (origIndex in 0 until source.numberOfPages) {
-                        val imported = target.importPage(source.getPage(origIndex))
-                        imported.rotation = (imported.rotation + extraRotation) % 360
-                    }
-                }
-                target.save(outputFile)
-            }
-        }
-        outputFile
+        val rect = if (landscape) PDRectangle(base.height, base.width) else base
+        val doc = PDDocument()
+        doc.addPage(PDPage(rect))
+        doc.save(file)
+        doc.close()
     }
 
-    /** Lock PDF with AES-128 password protection */
-    suspend fun lockPdf(inputFile: File, password: String, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile).use { doc ->
-                val permissions = AccessPermission()
-                val policy = StandardProtectionPolicy(password, password, permissions).apply {
-                    encryptionKeyLength = 128
-                }
-                doc.protect(policy)
-                doc.save(outputFile)
-            }
-            outputFile
-        }
-
-    /** Unlock password-protected PDF */
-    suspend fun unlockPdf(inputFile: File, password: String, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile, password).use { doc ->
-                doc.isAllSecurityToBeRemoved = true
-                doc.save(outputFile)
-            }
-            outputFile
-        }
-
-    /** Add diagonal translucent watermark across all pages */
-    suspend fun addWatermark(
-        inputFile: File,
-        watermarkText: String,
-        opacity: Float = 0.22f,
-        outputFile: File
-    ): File = withContext(Dispatchers.IO) {
-        PDDocument.load(inputFile).use { doc ->
-            for (page in doc.pages) {
-                val box = page.cropBox ?: page.mediaBox
-                val gs = PDExtendedGraphicsState().apply {
-                    nonStrokingAlphaConstant = opacity.coerceIn(0.05f, 0.8f)
-                }
-                PDPageContentStream(
-                    doc, page, PDPageContentStream.AppendMode.APPEND, true, true
-                ).use { cs ->
-                    cs.setGraphicsStateParameters(gs)
-                    cs.beginText()
-                    cs.setFont(PDType1Font.HELVETICA_BOLD, 44f)
-                    val centerX = box.width * 0.22f
-                    val centerY = box.height * 0.38f
-                    cs.setTextMatrix(Matrix.getRotateInstance(Math.toRadians(35.0), centerX, centerY))
-                    cs.showText(watermarkText)
-                    cs.endText()
-                }
-            }
-            doc.save(outputFile)
-        }
-        outputFile
-    }
-
-    /** Stamp a transparent bitmap (signature or flattened markup overlay) onto a page */
-    suspend fun stampBitmapOnPage(
-        inputFile: File,
-        pageIndex: Int,
-        bitmap: Bitmap,
-        normX: Float = 0f,
-        normY: Float = 0f,
-        normW: Float = 1f,
-        normH: Float = 1f,
-        outputFile: File
-    ): File = withContext(Dispatchers.IO) {
-        PDDocument.load(inputFile).use { doc ->
-            val safeIndex = pageIndex.coerceIn(0, doc.numberOfPages - 1)
-            val page = doc.getPage(safeIndex)
-            val box = page.cropBox ?: page.mediaBox
-            val x = box.width * normX
-            val width = box.width * normW
-            val height = box.height * normH
-            val y = box.height * (1f - normY - normH)
-
-            val pdImage = LosslessFactory.createFromImage(doc, bitmap)
-            PDPageContentStream(
-                doc, page, PDPageContentStream.AppendMode.APPEND, true, true
-            ).use { cs ->
-                cs.drawImage(pdImage, x, y, width, height)
-            }
-            doc.save(outputFile)
-        }
-        outputFile
-    }
-
-    /** Convert multiple images into a single PDF */
-    suspend fun imagesToPdf(
-        bitmaps: List<Bitmap>,
-        outputFile: File,
-        quality: Float = 0.82f
-    ): File = withContext(Dispatchers.IO) {
-        PDDocument().use { doc ->
-            bitmaps.forEach { bmp ->
-                val page = PDPage(PDRectangle(bmp.width.toFloat(), bmp.height.toFloat()))
-                doc.addPage(page)
-                val pdImage = JPEGFactory.createFromImage(doc, bmp, quality.coerceIn(0.2f, 1.0f))
-                PDPageContentStream(doc, page).use { cs ->
-                    cs.drawImage(pdImage, 0f, 0f)
-                }
-            }
-            FileOutputStream(outputFile).use { fos ->
-                doc.save(fos)
-            }
-        }
-        outputFile
-    }
-
-    /** Compress PDF offline by re-encoding pages at reduced resolution & JPEG quality */
-    suspend fun compressPdf(
-        inputFile: File,
-        quality: Float,
-        scaleFactor: Float,
-        outputFile: File
-    ): File = withContext(Dispatchers.IO) {
-        ParcelFileDescriptor.open(inputFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-            PdfRenderer(pfd).use { renderer ->
-                PDDocument().use { outDoc ->
-                    for (i in 0 until renderer.pageCount) {
-                        renderer.openPage(i).use { page ->
-                            val w = (page.width * 1.5f * scaleFactor).toInt().coerceAtLeast(400)
-                            val h = (page.height * 1.5f * scaleFactor).toInt().coerceAtLeast(400)
-                            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                            bmp.eraseColor(Color.WHITE)
-                            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_PRINT)
-
-                            val pdPage = PDPage(PDRectangle(page.width.toFloat(), page.height.toFloat()))
-                            outDoc.addPage(pdPage)
-                            val pdImage = JPEGFactory.createFromImage(outDoc, bmp, quality)
-                            PDPageContentStream(outDoc, pdPage).use { cs ->
-                                cs.drawImage(pdImage, 0f, 0f, page.width.toFloat(), page.height.toFloat())
-                            }
-                            bmp.recycle()
-                        }
-                    }
-                    outDoc.save(outputFile)
-                }
-            }
-        }
-        outputFile
-    }
-
-    /** Export every page of a PDF to PNG files */
-    suspend fun exportPagesToImages(inputFile: File, outputDir: File): List<File> =
-        withContext(Dispatchers.IO) {
-            if (!outputDir.exists()) outputDir.mkdirs()
-            val exported = mutableListOf<File>()
-            ParcelFileDescriptor.open(inputFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
-                PdfRenderer(pfd).use { renderer ->
-                    for (i in 0 until renderer.pageCount) {
-                        renderer.openPage(i).use { page ->
-                            val targetW = 1440
-                            val targetH = (targetW.toFloat() / page.width * page.height).toInt()
-                            val bmp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
-                            bmp.eraseColor(Color.WHITE)
-                            page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-
-                            val imgFile = File(outputDir, "${inputFile.nameWithoutExtension}_page_${i + 1}.png")
-                            FileOutputStream(imgFile).use { fos ->
-                                bmp.compress(Bitmap.CompressFormat.PNG, 100, fos)
-                            }
-                            bmp.recycle()
-                            exported.add(imgFile)
-                        }
-                    }
-                }
-            }
-            exported
-        }
-
-    /** Search embedded text inside PDF; returns 0-based matching page indices */
-    suspend fun searchTextInPdf(inputFile: File, query: String): List<Int> =
-        withContext(Dispatchers.IO) {
-            if (query.isBlank()) return@withContext emptyList()
-            val matches = mutableListOf<Int>()
-            PDDocument.load(inputFile).use { doc ->
-                val stripper = PDFTextStripper()
-                for (i in 1..doc.numberOfPages) {
-                    stripper.startPage = i
-                    stripper.endPage = i
-                    val text = stripper.getText(doc)
-                    if (text.contains(query, ignoreCase = true)) {
-                        matches.add(i - 1)
-                    }
-                }
-            }
-            matches
-        }
-
-    // ---------------------------------------------------------------
-    // v2.0 additions (all offline)
-    // ---------------------------------------------------------------
-
-    /** Page numbers: position 0 = left, 1 = center, 2 = right; style 0 = "1", 1 = "Page 1", 2 = "Page 1 of N" */
-    suspend fun addPageNumbers(inputFile: File, position: Int, style: Int, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile).use { doc ->
-                val total = doc.numberOfPages
-                val font = PDType1Font.HELVETICA
-                val size = 10f
-                for ((i, page) in doc.pages.withIndex()) {
-                    val box = page.cropBox ?: page.mediaBox
-                    val label = when (style) {
-                        1 -> "Page ${i + 1}"
-                        2 -> "Page ${i + 1} of $total"
-                        else -> "${i + 1}"
-                    }
-                    val w = font.getStringWidth(label) / 1000f * size
-                    val x = when (position) {
-                        0 -> box.lowerLeftX + 36f
-                        2 -> box.lowerLeftX + box.width - w - 36f
-                        else -> box.lowerLeftX + (box.width - w) / 2f
-                    }
-                    PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
-                        cs.beginText()
-                        cs.setFont(font, size)
-                        cs.setNonStrokingColor(90, 90, 90)
-                        cs.newLineAtOffset(x, box.lowerLeftY + 22f)
-                        cs.showText(label)
-                        cs.endText()
-                    }
-                }
-                doc.save(outputFile)
-            }
-            outputFile
-        }
-
-    /** Big rotated status stamp (APPROVED, DRAFT, ...) on every page. rgb = packed 0xRRGGBB */
-    suspend fun addStamp(inputFile: File, text: String, rgb: Int, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile).use { doc ->
-                val font = PDType1Font.HELVETICA_BOLD
-                val size = 54f
-                val r = (rgb shr 16) and 0xFF
-                val g = (rgb shr 8) and 0xFF
-                val b = rgb and 0xFF
-                val gs = PDExtendedGraphicsState().apply {
-                    nonStrokingAlphaConstant = 0.55f
-                }
-                for (page in doc.pages) {
-                    val box = page.cropBox ?: page.mediaBox
-                    val w = font.getStringWidth(text) / 1000f * size
-                    PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
-                        cs.setGraphicsStateParameters(gs)
-                        cs.setNonStrokingColor(r, g, b)
-                        cs.beginText()
-                        cs.setFont(font, size)
-                        cs.setTextMatrix(
-                            Matrix.getRotateInstance(
-                                Math.toRadians(20.0),
-                                box.lowerLeftX + (box.width - w * 0.94f) / 2f,
-                                box.lowerLeftY + box.height * 0.55f
-                            )
-                        )
-                        cs.showText(text)
-                        cs.endText()
-                    }
-                }
-                doc.save(outputFile)
-            }
-            outputFile
-        }
-
-    /** Trim every page by the given margins (PDF points) */
-    suspend fun cropPages(
-        inputFile: File, left: Float, top: Float, right: Float, bottom: Float, outputFile: File
-    ): File = withContext(Dispatchers.IO) {
-        PDDocument.load(inputFile).use { doc ->
-            for (page in doc.pages) {
-                val box = page.mediaBox
-                val newW = box.width - left - right
-                val newH = box.height - top - bottom
-                if (newW > 50f && newH > 50f) {
-                    page.cropBox = PDRectangle(box.lowerLeftX + left, box.lowerLeftY + bottom, newW, newH)
-                }
-            }
-            doc.save(outputFile)
-        }
-        outputFile
-    }
-
-    /** Insert a blank page after the given 1-based page (0 = at the very start) */
-    suspend fun insertBlankPage(inputFile: File, afterPage: Int, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile).use { doc ->
-                val refIndex = (afterPage - 1).coerceIn(0, doc.numberOfPages - 1)
-                val ref = doc.getPage(refIndex)
-                val blank = PDPage(PDRectangle(ref.mediaBox.width, ref.mediaBox.height))
-                if (afterPage <= 0) doc.pages.insertBefore(blank, doc.getPage(0))
-                else doc.pages.insertAfter(blank, ref)
-                doc.save(outputFile)
-            }
-            outputFile
-        }
-
-    /** Burn form fields into the page so they can no longer be edited */
-    suspend fun flattenForms(inputFile: File, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            PDDocument.load(inputFile).use { doc ->
-                doc.documentCatalog.acroForm?.flatten()
-                doc.save(outputFile)
-            }
-            outputFile
-        }
-
-    /** Plain text of the whole document (embedded text only) */
-    suspend fun extractText(inputFile: File): String = withContext(Dispatchers.IO) {
-        PDDocument.load(inputFile).use { doc -> PDFTextStripper().getText(doc) }
-    }
-
-    /** TXT, DOCX (text) and XLSX (cell values) to a clean paginated PDF */
-    suspend fun officeToPdf(context: Context, uri: Uri, ext: String, outputFile: File): File =
-        withContext(Dispatchers.IO) {
-            val input = context.contentResolver.openInputStream(uri)
-                ?: throw IllegalStateException("Cannot read selected file")
-            val lines: List<String> = input.use {
-                when (ext) {
-                    "docx" -> readDocxParagraphs(it)
-                    "xlsx" -> readXlsxRows(it)
-                    else -> it.bufferedReader().readLines()
-                }
-            }
-            layoutTextPdf(lines, outputFile)
-            outputFile
-        }
-
-    private fun readZipEntries(input: InputStream, wanted: Set<String>): Map<String, ByteArray> {
-        val map = HashMap<String, ByteArray>()
-        ZipInputStream(input).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (entry.name in wanted) map[entry.name] = zip.readBytes()
-                entry = zip.nextEntry
-            }
-        }
-        return map
-    }
-
-    private fun readDocxParagraphs(input: InputStream): List<String> {
-        val bytes = readZipEntries(input, setOf("word/document.xml"))["word/document.xml"]
-            ?: throw IllegalStateException("Not a valid DOCX file")
-        val parser = Xml.newPullParser()
-        parser.setInput(ByteArrayInputStream(bytes), null)
-        val paragraphs = ArrayList<String>()
-        val current = StringBuilder()
-        var inText = false
-        var event = parser.eventType
-        while (event != XmlPullParser.END_DOCUMENT) {
-            when (event) {
-                XmlPullParser.START_TAG -> if (parser.name.substringAfter(':') == "t") inText = true
-                XmlPullParser.TEXT -> if (inText) current.append(parser.text)
-                XmlPullParser.END_TAG -> when (parser.name.substringAfter(':')) {
-                    "t" -> inText = false
-                    "p" -> { paragraphs.add(current.toString()); current.setLength(0) }
-                }
-            }
-            event = parser.next()
-        }
-        return paragraphs
-    }
-
-    private fun readXlsxRows(input: InputStream): List<String> {
-        val entries = readZipEntries(input, setOf("xl/sharedStrings.xml", "xl/worksheets/sheet1.xml"))
-        val shared = ArrayList<String>()
-        entries["xl/sharedStrings.xml"]?.let { bytes ->
-            val parser = Xml.newPullParser()
-            parser.setInput(ByteArrayInputStream(bytes), null)
-            val sb = StringBuilder()
-            var inT = false
-            var event = parser.eventType
-            while (event != XmlPullParser.END_DOCUMENT) {
-                when (event) {
-                    XmlPullParser.START_TAG -> if (parser.name == "t") inT = true
-                    XmlPullParser.TEXT -> if (inT) sb.append(parser.text)
-                    XmlPullParser.END_TAG -> when (parser.name) {
-                        "t" -> inT = false
-                        "si" -> { shared.add(sb.toString()); sb.setLength(0) }
-                    }
-                }
-                event = parser.next()
-            }
-        }
-        val sheet = entries["xl/worksheets/sheet1.xml"] ?: throw IllegalStateException("Not a valid XLSX file")
-        val parser = Xml.newPullParser()
-        parser.setInput(ByteArrayInputStream(sheet), null)
-        val rows = ArrayList<String>()
-        val cells = ArrayList<String>()
-        var cellType: String? = null
-        var inV = false
-        var event = parser.eventType
-        while (event != XmlPullParser.END_DOCUMENT) {
-            when (event) {
-                XmlPullParser.START_TAG -> when (parser.name) {
-                    "c" -> cellType = parser.getAttributeValue(null, "t")
-                    "v" -> inV = true
-                }
-                XmlPullParser.TEXT -> if (inV) {
-                    val raw = parser.text
-                    cells.add(if (cellType == "s") shared.getOrElse(raw.toIntOrNull() ?: -1) { "" } else raw)
-                }
-                XmlPullParser.END_TAG -> when (parser.name) {
-                    "v" -> inV = false
-                    "row" -> { rows.add(cells.joinToString("   |   ")); cells.clear() }
-                }
-            }
-            event = parser.next()
-        }
-        return rows
-    }
-
-    private fun layoutTextPdf(paragraphs: List<String>, outputFile: File) {
-        PDDocument().use { doc ->
-            val font = PDType1Font.HELVETICA
-            val size = 11f
-            val lead = 15f
-            val margin = 54f
-            val box = PDRectangle.A4
-            val maxWidth = box.width - margin * 2
-            var page = PDPage(box)
+    fun bitmapsToPdf(bitmaps: List<Bitmap>, outputFile: File): Int {
+        val doc = PDDocument()
+        for (bmp in bitmaps) {
+            val page = PDPage(PDRectangle.A4)
             doc.addPage(page)
-            var cs = PDPageContentStream(doc, page)
-            var y = box.height - margin
+            val pw = page.mediaBox.width
+            val ph = page.mediaBox.height
+            val margin = 12f
+            val scale = minOf((pw - margin * 2) / bmp.width.coerceAtLeast(1), (ph - margin * 2) / bmp.height.coerceAtLeast(1))
+            val dw = bmp.width * scale
+            val dh = bmp.height * scale
+            val pdImg = JPEGFactory.createFromImage(doc, bmp, 0.90f)
+            PDPageContentStream(doc, page).use { cs ->
+                cs.drawImage(pdImg, (pw - dw) / 2f, (ph - dh) / 2f, dw, dh)
+            }
+        }
+        doc.save(outputFile)
+        val count = doc.numberOfPages
+        doc.close()
+        return count
+    }
 
-            fun drawLine(text: String) {
-                if (y < margin) {
-                    cs.close()
-                    page = PDPage(box)
-                    doc.addPage(page)
-                    cs = PDPageContentStream(doc, page)
-                    y = box.height - margin
+    fun getPageCount(file: File): Int {
+        PDDocument.load(file).use { return it.numberOfPages }
+    }
+
+    fun getMetadata(file: File): PdfMetaInfo {
+        PDDocument.load(file).use { doc ->
+            val info = doc.documentInformation
+            return PdfMetaInfo(
+                title = info?.title ?: "",
+                author = info?.author ?: "",
+                subject = info?.subject ?: "",
+                pageCount = doc.numberOfPages
+            )
+        }
+    }
+
+    fun updateMetadata(file: File, title: String, author: String, subject: String) {
+        val doc = PDDocument.load(file)
+        doc.documentInformation.title = title
+        doc.documentInformation.author = author
+        doc.documentInformation.subject = subject
+        saveInPlace(doc, file)
+    }
+
+    fun extractPageText(file: File, pageIndex: Int): String {
+        return try {
+            PDDocument.load(file).use { doc ->
+                val stripper = PDFTextStripper().apply {
+                    startPage = pageIndex + 1
+                    endPage = pageIndex + 1
                 }
-                if (text.isNotEmpty()) {
+                stripper.getText(doc).trim()
+            }
+        } catch (_: Exception) {
+            ""
+        }
+    }
+
+    fun searchPagesContaining(file: File, query: String): List<Int> {
+        if (query.isBlank()) return emptyList()
+        val matches = mutableListOf<Int>()
+        try {
+            PDDocument.load(file).use { doc ->
+                val stripper = PDFTextStripper()
+                for (p in 1..doc.numberOfPages) {
+                    stripper.startPage = p
+                    stripper.endPage = p
+                    val txt = stripper.getText(doc)
+                    if (txt.contains(query, ignoreCase = true)) matches.add(p - 1)
+                }
+            }
+        } catch (_: Exception) {}
+        return matches
+    }
+
+    fun renderPageBitmap(file: File, pageIndex: Int, targetWidth: Int = 1150): Bitmap {
+        val pfd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        val renderer = PdfRenderer(pfd)
+        val safeIdx = pageIndex.coerceIn(0, (renderer.pageCount - 1).coerceAtLeast(0))
+        val page = renderer.openPage(safeIdx)
+        val scale = targetWidth.toFloat() / page.width.coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(
+            (page.width * scale).toInt().coerceAtLeast(1),
+            (page.height * scale).toInt().coerceAtLeast(1),
+            Bitmap.Config.ARGB_8888
+        )
+        bmp.eraseColor(android.graphics.Color.WHITE)
+        page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+        page.close()
+        renderer.close()
+        pfd.close()
+        return bmp
+    }
+
+    // Commit all interactive DraftOverlays AND Freehand Ink Strokes permanently onto the PDF page!
+    fun commitDraftsAndInk(file: File, pageIndex: Int, overlays: List<DraftOverlay>, strokes: List<InkStroke>) {
+        if (overlays.isEmpty() && strokes.isEmpty()) return
+        val doc = PDDocument.load(file)
+        val page = doc.getPage(pageIndex.coerceIn(0, doc.numberOfPages - 1))
+        val pw = page.mediaBox.width
+        val ph = page.mediaBox.height
+
+        PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
+            for (ov in overlays) {
+                val x = (ov.xNorm.coerceIn(0.01f, 0.96f)) * pw
+                val topY = ph - (ov.yNorm.coerceIn(0.01f, 0.96f)) * ph
+                val boxW = (ov.wNorm.coerceIn(0.05f, 0.96f)) * pw
+                val boxH = (ov.hNorm.coerceIn(0.02f, 0.96f)) * ph
+                val bottomY = (topY - boxH).coerceAtLeast(4f)
+                val rgb = ov.colorArgb.toInt()
+                val cr = (rgb shr 16) and 0xFF
+                val cg = (rgb shr 8) and 0xFF
+                val cb = rgb and 0xFF
+
+                when (ov.kind) {
+                    OverlayKind.IMAGE -> {
+                        if (ov.imageBitmap != null) {
+                            val pdImg = LosslessFactory.createFromImage(doc, ov.imageBitmap)
+                            cs.drawImage(pdImg, x, bottomY, boxW, boxH)
+                        }
+                    }
+                    OverlayKind.WHITEOUT -> {
+                        cs.setNonStrokingColor(255, 255, 255)
+                        cs.addRect(x, bottomY, boxW, boxH)
+                        cs.fill()
+                    }
+                    OverlayKind.REDACT -> {
+                        cs.setNonStrokingColor(0, 0, 0)
+                        cs.addRect(x, bottomY, boxW, boxH)
+                        cs.fill()
+                    }
+                    OverlayKind.HIGHLIGHT -> {
+                        cs.saveGraphicsState()
+                        val gs = PDExtendedGraphicsState().apply { nonStrokingAlphaConstant = 0.38f }
+                        cs.setGraphicsStateParameters(gs)
+                        cs.setNonStrokingColor(cr, cg, cb)
+                        cs.addRect(x, bottomY, boxW, boxH)
+                        cs.fill()
+                        cs.restoreGraphicsState()
+                    }
+                    OverlayKind.SHAPE_RECT -> {
+                        cs.setStrokingColor(cr, cg, cb)
+                        cs.setLineWidth(2.0f)
+                        cs.addRect(x, bottomY, boxW, boxH)
+                        cs.stroke()
+                    }
+                    OverlayKind.SHAPE_LINE -> {
+                        cs.setStrokingColor(cr, cg, cb)
+                        cs.setLineWidth(2.4f)
+                        cs.moveTo(x, topY - boxH / 2f)
+                        cs.lineTo(x + boxW, topY - boxH / 2f)
+                        cs.stroke()
+                    }
+                    OverlayKind.STICKY_NOTE, OverlayKind.TEXT -> {
+                        if (ov.text.isNotBlank()) {
+                            val font = resolveFont(ov.fontStyle, ov.isBold, ov.isItalic)
+                            val fSize = (ov.fontSizeSp * 1.05f).coerceIn(8f, 54f)
+                            val hasLink = ov.linkUrl.isNotBlank()
+                            val tr = if (hasLink) 25 else cr
+                            val tg = if (hasLink) 118 else cg
+                            val tb = if (hasLink) 210 else cb
+
+                            val lines = ov.text.split("\n")
+                            var curY = (topY - fSize).coerceAtLeast(14f)
+
+                            if (ov.kind == OverlayKind.STICKY_NOTE || ov.hasBgHighlight) {
+                                val maxW = lines.maxOf { (font.getStringWidth(sanitize(it)) / 1000f) * fSize }.coerceAtLeast(60f)
+                                val noteH = lines.size * fSize * 1.38f + 12f
+                                cs.setNonStrokingColor(255, 245, 157)
+                                cs.addRect(x - 5f, curY - noteH + fSize + 5f, maxW + 12f, noteH)
+                                cs.fill()
+                                if (ov.kind == OverlayKind.STICKY_NOTE) {
+                                    cs.setStrokingColor(245, 166, 35)
+                                    cs.setLineWidth(1.0f)
+                                    cs.addRect(x - 5f, curY - noteH + fSize + 5f, maxW + 12f, noteH)
+                                    cs.stroke()
+                                }
+                            }
+
+                            cs.setNonStrokingColor(tr, tg, tb)
+                            for (rawLine in lines) {
+                                val clean = sanitize(rawLine)
+                                cs.beginText()
+                                cs.setFont(font, fSize)
+                                cs.newLineAtOffset(x, curY)
+                                cs.showText(clean)
+                                cs.endText()
+
+                                val w = ((font.getStringWidth(clean) / 1000f) * fSize).coerceAtLeast(24f)
+                                if ((ov.isUnderline || hasLink) && clean.isNotEmpty()) {
+                                    cs.setStrokingColor(tr, tg, tb)
+                                    cs.setLineWidth(0.9f)
+                                    cs.moveTo(x, curY - 2f)
+                                    cs.lineTo(x + w, curY - 2f)
+                                    cs.stroke()
+                                }
+                                if (ov.isStrikethrough && clean.isNotEmpty()) {
+                                    cs.setStrokingColor(tr, tg, tb)
+                                    cs.setLineWidth(0.9f)
+                                    cs.moveTo(x, curY + fSize * 0.30f)
+                                    cs.lineTo(x + w, curY + fSize * 0.30f)
+                                    cs.stroke()
+                                }
+                                if (hasLink && clean.isNotEmpty()) {
+                                    val finalUrl = if (ov.linkUrl.startsWith("http://") || ov.linkUrl.startsWith("https://")) ov.linkUrl else "https://${ov.linkUrl}"
+                                    val link = PDAnnotationLink().apply {
+                                        borderStyle = PDBorderStyleDictionary().apply { width = 0f }
+                                        rectangle = PDRectangle(x, curY - 3f, w, fSize + 5f)
+                                        action = PDActionURI().apply { uri = finalUrl }
+                                    }
+                                    page.annotations.add(link)
+                                }
+                                curY -= (fSize * 1.32f)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Commit Freehand Ink Drawing strokes
+            for (st in strokes) {
+                if (st.points.size < 2) continue
+                val rgb = st.colorArgb.toInt()
+                cs.setStrokingColor((rgb shr 16) and 0xFF, (rgb shr 8) and 0xFF, rgb and 0xFF)
+                cs.setLineWidth(st.strokeWidthPt)
+                cs.setLineCapStyle(1)
+                cs.setLineJoinStyle(1)
+                val first = st.points.first()
+                cs.moveTo(first.first * pw, ph - first.second * ph)
+                for (i in 1 until st.points.size) {
+                    val pt = st.points[i]
+                    cs.lineTo(pt.first * pw, ph - pt.second * ph)
+                }
+                cs.stroke()
+            }
+        }
+        saveInPlace(doc, file)
+    }
+
+    // --- PAGE OPERATIONS ---
+
+    fun addBlankPage(file: File, afterPageIndex: Int, pageSize: String = "A4", landscape: Boolean = false): Int {
+        val doc = PDDocument.load(file)
+        val base = when (pageSize) {
+            "Letter" -> PDRectangle.LETTER
+            "Legal" -> PDRectangle.LEGAL
+            else -> PDRectangle.A4
+        }
+        val rect = if (landscape) PDRectangle(base.height, base.width) else base
+        val newPage = PDPage(rect)
+        if (afterPageIndex in 0 until doc.numberOfPages - 1) {
+            doc.pages.insertAfter(newPage, doc.getPage(afterPageIndex))
+        } else {
+            doc.addPage(newPage)
+        }
+        val count = doc.numberOfPages
+        saveInPlace(doc, file)
+        return count
+    }
+
+    fun rotatePage(file: File, pageIndex: Int, degrees: Int = 90, allPages: Boolean = false) {
+        val doc = PDDocument.load(file)
+        for (i in 0 until doc.numberOfPages) {
+            if (allPages || i == pageIndex) {
+                val p = doc.getPage(i)
+                p.rotation = (p.rotation + degrees) % 360
+            }
+        }
+        saveInPlace(doc, file)
+    }
+
+    fun deletePage(file: File, pageIndex: Int): Int {
+        val doc = PDDocument.load(file)
+        if (doc.numberOfPages <= 1) {
+            doc.close()
+            throw IllegalStateException("Cannot delete the only remaining page.")
+        }
+        doc.removePage(pageIndex.coerceIn(0, doc.numberOfPages - 1))
+        val count = doc.numberOfPages
+        saveInPlace(doc, file)
+        return count
+    }
+
+    fun movePage(file: File, fromIndex: Int, toIndex: Int) {
+        val doc = PDDocument.load(file)
+        val n = doc.numberOfPages
+        if (fromIndex !in 0 until n || toIndex !in 0 until n || fromIndex == toIndex) {
+            doc.close()
+            return
+        }
+        val page = doc.getPage(fromIndex)
+        doc.pages.remove(page)
+        if (toIndex >= doc.numberOfPages) doc.addPage(page) else doc.pages.insertBefore(page, doc.getPage(toIndex))
+        saveInPlace(doc, file)
+    }
+
+    fun addHeaderFooterNumbers(file: File, headerText: String = "", footerText: String = "", addNumbers: Boolean = true) {
+        val doc = PDDocument.load(file)
+        val total = doc.numberOfPages
+        for (i in 0 until total) {
+            val page = doc.getPage(i)
+            val pw = page.mediaBox.width
+            val ph = page.mediaBox.height
+            PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
+                cs.setNonStrokingColor(100, 100, 100)
+                if (headerText.isNotBlank()) {
                     cs.beginText()
-                    cs.setFont(font, size)
-                    cs.newLineAtOffset(margin, y)
-                    cs.showText(text)
+                    cs.setFont(PDType1Font.HELVETICA, 9.5f)
+                    cs.newLineAtOffset(36f, ph - 22f)
+                    cs.showText(sanitize(headerText).take(85))
                     cs.endText()
                 }
-                y -= lead
-            }
-
-            for (para in paragraphs) {
-                val clean = para.map { if (it.code in 32..255) it else ' ' }.joinToString("")
-                if (clean.isBlank()) { drawLine(""); continue }
-                var line = ""
-                for (word in clean.split(' ')) {
-                    val test = if (line.isEmpty()) word else "$line $word"
-                    if (font.getStringWidth(test) / 1000f * size > maxWidth && line.isNotEmpty()) {
-                        drawLine(line)
-                        line = word
-                    } else line = test
+                if (footerText.isNotBlank()) {
+                    cs.beginText()
+                    cs.setFont(PDType1Font.HELVETICA, 9.5f)
+                    cs.newLineAtOffset(36f, 18f)
+                    cs.showText(sanitize(footerText).take(65))
+                    cs.endText()
                 }
-                if (line.isNotEmpty()) drawLine(line)
+                if (addNumbers) {
+                    cs.beginText()
+                    cs.setFont(PDType1Font.HELVETICA, 9.5f)
+                    cs.newLineAtOffset(pw - 86f, 18f)
+                    cs.showText("Page ${i + 1} / $total")
+                    cs.endText()
+                }
             }
-            cs.close()
-            doc.save(outputFile)
         }
+        saveInPlace(doc, file)
+    }
+
+    fun appendPdfIntoCurrent(currentFile: File, extraFile: File): Int {
+        val tmpOut = File(currentFile.parentFile, "${currentFile.name}.merge.tmp")
+        val merger = PDFMergerUtility()
+        merger.destinationFileName = tmpOut.absolutePath
+        merger.addSource(currentFile)
+        merger.addSource(extraFile)
+        merger.mergeDocuments(null)
+        if (currentFile.exists()) currentFile.delete()
+        tmpOut.renameTo(currentFile)
+        currentFile.setLastModified(System.currentTimeMillis())
+        return getPageCount(currentFile)
+    }
+
+    fun extractRangeToNewFile(srcFile: File, outFile: File, from1: Int, to1: Int): Int {
+        PDDocument.load(srcFile).use { src ->
+            val s = (from1 - 1).coerceIn(0, src.numberOfPages - 1)
+            val e = (to1 - 1).coerceIn(s, src.numberOfPages - 1)
+            val dst = PDDocument()
+            for (i in s..e) dst.importPage(src.getPage(i))
+            dst.save(outFile)
+            val count = dst.numberOfPages
+            dst.close()
+            return count
+        }
+    }
+
+    // --- DIGITAL SIGNATURE, WATERMARK, LINKS, SECURITY, COMPRESS, EXPORT ---
+
+    fun stampDigitalSignature(file: File, pageIndex: Int, signerName: String, reason: String, location: String, xPercent: Float, yPercent: Float) {
+        val hash = sha256Short(file)
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+        val doc = PDDocument.load(file)
+        val page = doc.getPage(pageIndex.coerceIn(0, doc.numberOfPages - 1))
+        val pw = page.mediaBox.width
+        val ph = page.mediaBox.height
+        val boxW = 225f
+        val boxH = 66f
+        val x = (xPercent.coerceIn(0.04f, 0.62f) * pw).coerceAtMost((pw - boxW - 12f).coerceAtLeast(12f))
+        val y = (ph - (yPercent.coerceIn(0.08f, 0.92f) * ph) - boxH).coerceAtLeast(16f)
+
+        doc.documentInformation.setCustomMetadataValue("AuraDigitalSigner", signerName)
+        doc.documentInformation.setCustomMetadataValue("AuraDigitalSignDate", timestamp)
+        doc.documentInformation.setCustomMetadataValue("AuraDigitalSHA256", hash)
+
+        PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
+            cs.setNonStrokingColor(244, 248, 255)
+            cs.addRect(x, y, boxW, boxH)
+            cs.fill()
+            cs.setStrokingColor(25, 118, 210)
+            cs.setLineWidth(1.2f)
+            cs.addRect(x, y, boxW, boxH)
+            cs.stroke()
+            cs.setNonStrokingColor(25, 118, 210)
+            cs.addRect(x, y + boxH - 15f, boxW, 15f)
+            cs.fill()
+            cs.setNonStrokingColor(255, 255, 255)
+            cs.beginText()
+            cs.setFont(PDType1Font.HELVETICA_BOLD, 8f)
+            cs.newLineAtOffset(x + 6f, y + boxH - 11f)
+            cs.showText("DIGITALLY SIGNED • AURA VERIFIED")
+            cs.endText()
+            cs.setNonStrokingColor(20, 20, 20)
+            cs.beginText()
+            cs.setFont(PDType1Font.HELVETICA_BOLD, 9.5f)
+            cs.newLineAtOffset(x + 6f, y + boxH - 27f)
+            cs.showText(sanitize("Signed by: ${signerName.ifBlank { "Authorized User" }}").take(38))
+            cs.endText()
+            cs.setNonStrokingColor(70, 70, 70)
+            cs.beginText()
+            cs.setFont(PDType1Font.HELVETICA, 7.5f)
+            cs.newLineAtOffset(x + 6f, y + boxH - 39f)
+            cs.showText(sanitize("Date: $timestamp | ${location.ifBlank { "Local Device" }}").take(46))
+            cs.endText()
+            cs.beginText()
+            cs.setFont(PDType1Font.HELVETICA, 7.5f)
+            cs.newLineAtOffset(x + 6f, y + boxH - 50f)
+            cs.showText(sanitize("Reason: ${reason.ifBlank { "Document Approval" }}").take(46))
+            cs.endText()
+            cs.beginText()
+            cs.setFont(PDType1Font.COURIER_BOLD, 7f)
+            cs.newLineAtOffset(x + 6f, y + 6f)
+            cs.showText("SHA-256: $hash")
+            cs.endText()
+        }
+        saveInPlace(doc, file)
+    }
+
+    fun addCustomWatermark(file: File, pageIndex: Int, text: String, fontSize: Float, opacity: Float, angleDegrees: Float, colorHex: Int, allPages: Boolean) {
+        val clean = sanitize(text.ifBlank { "CONFIDENTIAL" })
+        val r = (colorHex shr 16) and 0xFF
+        val g = (colorHex shr 8) and 0xFF
+        val b = colorHex and 0xFF
+        val doc = PDDocument.load(file)
+        for (i in 0 until doc.numberOfPages) {
+            if (!allPages && i != pageIndex) continue
+            val page = doc.getPage(i)
+            val pw = page.mediaBox.width
+            val ph = page.mediaBox.height
+            PDPageContentStream(doc, page, PDPageContentStream.AppendMode.APPEND, true, true).use { cs ->
+                val gs = PDExtendedGraphicsState().apply { nonStrokingAlphaConstant = opacity.coerceIn(0.08f, 1.0f) }
+                cs.setGraphicsStateParameters(gs)
+                cs.setNonStrokingColor(r, g, b)
+                cs.beginText()
+                cs.setFont(PDType1Font.HELVETICA_BOLD, fontSize.coerceIn(14f, 84f))
+                cs.setTextMatrix(Matrix.getRotateInstance(Math.toRadians(angleDegrees.toDouble()), pw * 0.20f, ph * 0.42f))
+                cs.showText(clean)
+                cs.endText()
+            }
+        }
+        saveInPlace(doc, file)
+    }
+
+    fun listLinks(file: File): List<PdfLinkInfo> {
+        val result = mutableListOf<PdfLinkInfo>()
+        PDDocument.load(file).use { doc ->
+            for (p in 0 until doc.numberOfPages) {
+                doc.getPage(p).annotations.forEachIndexed { idx, ann ->
+                    if (ann is PDAnnotationLink) {
+                        val uri = (ann.action as? PDActionURI)?.uri ?: "(Internal Link)"
+                        result.add(PdfLinkInfo(idx, p, uri))
+                    }
+                }
+            }
+        }
+        return result
+    }
+
+    fun removeLinks(file: File, targetPage: Int? = null, targetUrl: String? = null): Int {
+        var removed = 0
+        val doc = PDDocument.load(file)
+        for (p in 0 until doc.numberOfPages) {
+            if (targetPage != null && p != targetPage) continue
+            val page = doc.getPage(p)
+            val annots = page.annotations
+            val toRemove = annots.filter { ann ->
+                if (ann !is PDAnnotationLink) return@filter false
+                if (targetUrl == null) true
+                else ((ann.action as? PDActionURI)?.uri ?: "(Internal Link)") == targetUrl
+            }
+            if (toRemove.isNotEmpty()) {
+                annots.removeAll(toRemove.toSet())
+                page.annotations = annots
+                removed += toRemove.size
+            }
+        }
+        saveInPlace(doc, file)
+        return removed
+    }
+
+    fun protectPdf(file: File, password: String) {
+        val doc = PDDocument.load(file)
+        val spp = StandardProtectionPolicy(password, password, AccessPermission()).apply { encryptionKeyLength = 128 }
+        doc.protect(spp)
+        saveInPlace(doc, file)
+    }
+
+    fun unlockPdf(file: File, password: String) {
+        val doc = PDDocument.load(file, password)
+        doc.isAllSecurityToBeRemoved = true
+        saveInPlace(doc, file)
+    }
+
+    fun compressPdf(srcFile: File, outFile: File, jpegQuality: Float = 0.60f, widthPx: Int = 950) {
+        val count = getPageCount(srcFile)
+        val dst = PDDocument()
+        for (i in 0 until count) {
+            val bmp = renderPageBitmap(srcFile, i, widthPx)
+            val page = PDPage(PDRectangle.A4)
+            dst.addPage(page)
+            val pdImg = JPEGFactory.createFromImage(dst, bmp, jpegQuality)
+            PDPageContentStream(dst, page).use { cs ->
+                cs.drawImage(pdImg, 0f, 0f, page.mediaBox.width, page.mediaBox.height)
+            }
+            bmp.recycle()
+        }
+        dst.save(outFile)
+        dst.close()
+    }
+
+    fun imagesToPdf(context: Context, uris: List<Uri>, outputFile: File): Int {
+        val doc = PDDocument()
+        for (uri in uris) {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                val bmp = BitmapFactory.decodeStream(input) ?: return@use
+                val page = PDPage(PDRectangle.A4)
+                doc.addPage(page)
+                val pw = page.mediaBox.width
+                val ph = page.mediaBox.height
+                val margin = 16f
+                val scale = minOf((pw - margin * 2) / bmp.width, (ph - margin * 2) / bmp.height)
+                val dw = bmp.width * scale
+                val dh = bmp.height * scale
+                val pdImg = JPEGFactory.createFromImage(doc, bmp, 0.88f)
+                PDPageContentStream(doc, page).use { cs ->
+                    cs.drawImage(pdImg, (pw - dw) / 2f, (ph - dh) / 2f, dw, dh)
+                }
+                bmp.recycle()
+            }
+        }
+        doc.save(outputFile)
+        val count = doc.numberOfPages
+        doc.close()
+        return count
+    }
+
+    fun exportPageAsPng(file: File, pageIndex: Int, outPng: File) {
+        val bmp = renderPageBitmap(file, pageIndex, 1440)
+        FileOutputStream(outPng).use { out -> bmp.compress(Bitmap.CompressFormat.PNG, 95, out) }
+        bmp.recycle()
     }
 }

@@ -6,7 +6,3 @@
 /build
 /app/build
 /captures
-.externalNativeBuild
-.cxx
-*.jks
-*.keystore
