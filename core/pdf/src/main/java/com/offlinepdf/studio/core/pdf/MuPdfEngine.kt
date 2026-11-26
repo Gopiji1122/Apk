@@ -265,11 +265,9 @@ class MuPdfDocumentHandle(
                                 sb.append(Character.toChars(ch.c))
                             }
                         }
-                        sb.append('
-')
+                        sb.appendLine()
                     }
-                    sb.append('
-')
+                    sb.appendLine()
                 }
                 sb.toString().trim()
             } finally {
