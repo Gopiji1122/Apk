@@ -21,7 +21,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachPointerEventScope
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
@@ -461,7 +460,7 @@ fun PdfReaderScreen(
                         )
                     }
                     .pointerInput(Unit) {
-                        awaitEachPointerEventScope {
+                        awaitPointerEventScope {
                             while (true) {
                                 awaitFirstDown(requireUnconsumed = false)
                                 do {
@@ -571,7 +570,7 @@ fun PdfReaderScreen(
             }
 
             // 4. Bottom-Right Floating Edit Button (hides/reappears with user intent, opens separate Editor)
-            AnimatedVisibility(
+            androidx.compose.animation.AnimatedVisibility(
                 visible = state.controlsVisible && !isSearchMode && state.pageCount > 0,
                 enter = scaleIn(tween(180)) + fadeIn(tween(180)),
                 exit = scaleOut(tween(160)) + fadeOut(tween(160)),
