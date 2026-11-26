@@ -36,6 +36,15 @@ class SafDocumentRepository @Inject constructor(
     fun observeFavorites(): Flow<List<DocumentEntity>> = documentDao.observeFavorites()
     fun observeScannedDocuments(): Flow<List<DocumentEntity>> = documentDao.observeScannedDocuments()
 
+    private fun workingCopyFileFor(uriString: String): File {
+        val dir = File(context.filesDir, "pdf_working_copies").apply { mkdirs() }
+        val hash = MessageDigest.getInstance("SHA-256")
+            .digest(uriString.toByteArray())
+            .joinToString("") { "%02x".format(it) }
+            .take(24)
+        return File(dir, "$hash.pdf")
+    }
+
     suspend fun importPickedDocument(uri: Uri, pageCount: Int = 0): DocumentEntity =
         withContext(ioDispatcher) {
             try {
@@ -44,15 +53,30 @@ class SafDocumentRepository @Inject constructor(
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             } catch (_: SecurityException) {
-                // Some providers grant temporary read access only; we copy to private working cache on open.
+                // OEM file managers (e.g. OnePlus FilePathProvider) grant temporary read access only.
             }
 
-            val meta = queryMetadata(uri)
+            // Immediately materialize a read-only private copy while the temporary URI grant is active.
+            val copiedFile = runCatching { copyUriToWorkingFile(uri) }.getOrNull()
+            val meta = runCatching { queryMetadata(uri) }.getOrElse {
+                SafFileMetadata(
+                    uri = uri,
+                    displayName = extractFallbackName(uri),
+                    sizeBytes = copiedFile?.length() ?: 0L
+                )
+            }
+
             val existing = documentDao.getByUri(uri.toString())
+            val resolvedSize = when {
+                meta.sizeBytes > 0L -> meta.sizeBytes
+                copiedFile != null && copiedFile.length() > 0L -> copiedFile.length()
+                else -> existing?.sizeBytes ?: 0L
+            }
+
             val entity = DocumentEntity(
                 uriString = uri.toString(),
-                displayName = meta.displayName,
-                sizeBytes = meta.sizeBytes,
+                displayName = meta.displayName.ifBlank { existing?.displayName ?: extractFallbackName(uri) },
+                sizeBytes = resolvedSize,
                 pageCount = if (pageCount > 0) pageCount else (existing?.pageCount ?: 0),
                 lastOpenedAt = System.currentTimeMillis(),
                 lastReadPage = existing?.lastReadPage ?: 0,
@@ -65,8 +89,14 @@ class SafDocumentRepository @Inject constructor(
         }
 
     suspend fun queryMetadata(uri: Uri): SafFileMetadata = withContext(ioDispatcher) {
-        var name = "Document.pdf"
+        var name = extractFallbackName(uri)
         var size = 0L
+        if (uri.scheme == "file") {
+            val f = File(uri.path.orEmpty())
+            if (f.exists()) {
+                return@withContext SafFileMetadata(uri = uri, displayName = f.name, sizeBytes = f.length())
+            }
+        }
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
             val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
@@ -79,24 +109,56 @@ class SafDocumentRepository @Inject constructor(
     }
 
     /**
-     * Copies a SAF content URI into an app-private cache file so native MuPDF can memory-map
-     * and seek reliably without ever mutating the user's original file.
+     * Returns a local readable PDF file for native MuPDF without modifying the original document.
+     * If a temporary OEM file-manager URI grant has expired on a subsequent launch, falls back
+     * seamlessly to the previously materialized private copy.
      */
     suspend fun materializeReadOnlyCopy(uri: Uri): File = withContext(ioDispatcher) {
-        val cacheDir = File(context.cacheDir, "pdf_working_copies").apply { mkdirs() }
-        val hash = MessageDigest.getInstance("SHA-256")
-            .digest(uri.toString().toByteArray())
-            .joinToString("") { "%02x".format(it) }
-            .take(24)
-        val outFile = File(cacheDir, "$hash.pdf")
+        if (uri.scheme == "file") {
+            val direct = File(uri.path.orEmpty())
+            if (direct.exists() && direct.canRead()) return@withContext direct
+        }
 
+        val target = workingCopyFileFor(uri.toString())
+        try {
+            copyUriToWorkingFile(uri)
+        } catch (se: SecurityException) {
+            if (target.exists() && target.length() > 0L) {
+                target
+            } else {
+                throw se
+            }
+        } catch (t: Throwable) {
+            if (target.exists() && target.length() > 0L) {
+                target
+            } else {
+                throw t
+            }
+        }
+    }
+
+    private fun copyUriToWorkingFile(uri: Uri): File {
+        val outFile = workingCopyFileFor(uri.toString())
+        val tempFile = File(outFile.parentFile, "${outFile.name}.tmp")
         context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(outFile).use { output ->
+            FileOutputStream(tempFile).use { output ->
                 input.copyTo(output, bufferSize = 64 * 1024)
             }
         } ?: error("Unable to open PDF stream for URI: $uri")
 
-        outFile
+        if (tempFile.exists() && tempFile.length() > 0L) {
+            if (outFile.exists()) outFile.delete()
+            if (!tempFile.renameTo(outFile)) {
+                tempFile.copyTo(outFile, overwrite = true)
+                tempFile.delete()
+            }
+        }
+        return outFile
+    }
+
+    private fun extractFallbackName(uri: Uri): String {
+        val last = uri.lastPathSegment?.substringAfterLast('/')?.trim()
+        return if (!last.isNullOrBlank()) last else "Document.pdf"
     }
 
     suspend fun updatePageCountAndProgress(uri: String, pageCount: Int, lastReadPage: Int) =
@@ -126,17 +188,21 @@ class SafDocumentRepository @Inject constructor(
 
     suspend fun removeFromLibrary(uri: String) = withContext(ioDispatcher) {
         documentDao.deleteByUri(uri)
+        workingCopyFileFor(uri).delete()
     }
 
     suspend fun clearWorkingCache(): Long = withContext(ioDispatcher) {
-        val cacheDir = File(context.cacheDir, "pdf_working_copies")
-        val freed = calculateDirSize(cacheDir)
-        cacheDir.deleteRecursively()
+        val dir1 = File(context.filesDir, "pdf_working_copies")
+        val dir2 = File(context.cacheDir, "pdf_working_copies")
+        val freed = calculateDirSize(dir1) + calculateDirSize(dir2)
+        dir1.deleteRecursively()
+        dir2.deleteRecursively()
         freed
     }
 
     suspend fun getWorkingCacheSizeBytes(): Long = withContext(ioDispatcher) {
-        calculateDirSize(File(context.cacheDir, "pdf_working_copies"))
+        calculateDirSize(File(context.filesDir, "pdf_working_copies")) +
+            calculateDirSize(File(context.cacheDir, "pdf_working_copies"))
     }
 
     private fun calculateDirSize(dir: File): Long {
