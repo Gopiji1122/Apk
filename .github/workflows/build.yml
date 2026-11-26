@@ -11,6 +11,11 @@ jobs:
         with: { distribution: temurin, java-version: '17' }
       - uses: subosito/flutter-action@v2
         with: { channel: stable, cache: true }
+      - name: Verify the right sources were pushed
+        run: |
+          grep -n "pdfrx" pubspec.yaml
+          grep -q "pdfrx: ^2" pubspec.yaml || (echo "OLD pubspec.yaml pushed - replace it with the new one" && exit 1)
+          grep -q "mergePdfs" lib/main.dart || (echo "OLD lib/main.dart pushed - replace it with the new one" && exit 1)
       - name: Generate Android shell and add our code
         run: |
           flutter create --org com.pdfforge --project-name pdfforge --platforms=android app

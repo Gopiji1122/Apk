@@ -17,7 +17,11 @@ import 'package:share_plus/share_plus.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart' as sf;
 import 'package:xml/xml.dart';
 
-void main() => runApp(const App());
+void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  pdfrxFlutterInitialize();
+  runApp(const App());
+}
 
 ThemeData _theme(Brightness b) => ThemeData(
     useMaterial3: true, colorSchemeSeed: const Color(0xFF5B5BF0), brightness: b);
@@ -133,6 +137,25 @@ void showText(BuildContext c, String text) => showModalBottomSheet(
                   ]))
             ])));
 
+Future<List<int>> mergePdfs(List<String> ps) async {
+  final dst = sf.PdfDocument();
+  dst.pageSettings.margins.all = 0;
+  final srcs = <sf.PdfDocument>[];
+  for (final p in ps) {
+    final src = sf.PdfDocument(inputBytes: File(p).readAsBytesSync());
+    srcs.add(src);
+    for (var i = 0; i < src.pages.count; i++) {
+      final pg = src.pages[i];
+      dst.pageSettings.size = pg.size;
+      dst.pages.add().graphics.drawPdfTemplate(pg.createTemplate(), Offset.zero);
+    }
+  }
+  final out = await dst.save();
+  for (final d in srcs) { d.dispose(); }
+  dst.dispose();
+  return out;
+}
+
 // ---------- tools ----------
 class Tool {
   final IconData icon;
@@ -151,10 +174,7 @@ final tools = <Tool>[
   Tool(Icons.merge_type, 'Merge', 'Combine PDFs', const Color(0xFF5B5BF0), (c) async {
     final ps = await pick(['pdf'], multi: true);
     if (ps.length < 2) return c.mounted ? toast(c, 'Pick at least 2 PDFs') : null;
-    final dest = sf.PdfDocument(inputBytes: File(ps[0]).readAsBytesSync());
-    sf.PdfDocumentBase.merge(dest, ps.skip(1).map((p) => File(p).readAsBytesSync()).toList());
-    final out = await dest.save();
-    dest.dispose();
+    final out = await mergePdfs(ps);
     if (c.mounted) await finish(c, out, 'merged');
   }),
   Tool(Icons.view_agenda_outlined, 'Organize', 'Reorder, rotate, delete', const Color(0xFF10B981),
