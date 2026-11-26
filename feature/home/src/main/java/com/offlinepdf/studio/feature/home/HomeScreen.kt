@@ -86,7 +86,7 @@ fun HomeScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                PhaseBadge(label = "Phase 1", active = true)
+                PhaseBadge(label = "Phase 2", active = true)
             }
         }
 

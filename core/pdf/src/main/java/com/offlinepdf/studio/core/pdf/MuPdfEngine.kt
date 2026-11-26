@@ -8,6 +8,8 @@ import android.graphics.Paint
 import android.util.LruCache
 import com.artifex.mupdf.fitz.Document
 import com.artifex.mupdf.fitz.Matrix
+import com.artifex.mupdf.fitz.Outline
+import com.artifex.mupdf.fitz.Quad
 import com.artifex.mupdf.fitz.android.AndroidDrawDevice
 import com.offlinepdf.studio.core.common.IoDispatcher
 import dagger.Binds
@@ -52,8 +54,8 @@ class MuPdfEngine @Inject constructor(
 
 /**
  * Thread-safe wrapper around MuPDF's native [Document].
- * All native calls are serialized per document handle to prevent JNI race conditions,
- * and every loaded [com.artifex.mupdf.fitz.Page] is explicitly destroyed after rendering.
+ * Separates full-resolution page cache from thumbnail cache and always releases
+ * native [com.artifex.mupdf.fitz.Page] and [com.artifex.mupdf.fitz.StructuredText] objects.
  */
 class MuPdfDocumentHandle(
     private val document: Document
@@ -63,12 +65,15 @@ class MuPdfDocumentHandle(
     @Volatile
     private var closed = false
 
-    // Memory-aware bitmap LRU cache (~1/10 of max heap, capped at 32 MB)
-    private val maxCacheKb: Int = ((Runtime.getRuntime().maxMemory() / 1024L) / 10L)
+    private val maxPageCacheKb: Int = ((Runtime.getRuntime().maxMemory() / 1024L) / 10L)
         .toInt()
         .coerceIn(8 * 1024, 32 * 1024)
 
-    private val pageCache = object : LruCache<String, Bitmap>(maxCacheKb) {
+    private val pageCache = object : LruCache<String, Bitmap>(maxPageCacheKb) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
+    }
+
+    private val thumbCache = object : LruCache<String, Bitmap>(8 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
     }
 
@@ -115,13 +120,39 @@ class MuPdfDocumentHandle(
         }
     }
 
+    override fun getOutline(): List<PdfOutlineEntry> = synchronized(lock) {
+        if (closed) return emptyList()
+        val roots = runCatching { document.loadOutline() }.getOrNull() ?: return emptyList()
+        val result = mutableListOf<PdfOutlineEntry>()
+        flattenOutline(roots, 0, result)
+        result
+    }
+
+    private fun flattenOutline(
+        nodes: Array<Outline>,
+        depth: Int,
+        out: MutableList<PdfOutlineEntry>
+    ) {
+        for (node in nodes) {
+            val loc = runCatching { document.resolveLink(node) }.getOrNull()
+            val pageNum = if (loc != null) document.pageNumberFromLocation(loc) else -1
+            if (!node.title.isNullOrBlank() && pageNum >= 0) {
+                out.add(PdfOutlineEntry(title = node.title.trim(), pageIndex = pageNum, depth = depth))
+            }
+            val children = node.down
+            if (children != null && children.isNotEmpty() && depth < 5) {
+                flattenOutline(children, depth + 1, out)
+            }
+        }
+    }
+
     override fun renderPage(
         pageIndex: Int,
         targetWidthPx: Int,
         rotationDegrees: Int,
         invertColors: Boolean
     ): Bitmap {
-        val safeWidth = targetWidthPx.coerceIn(120, 2400)
+        val safeWidth = targetWidthPx.coerceIn(120, 2600)
         val normalizedRot = ((rotationDegrees % 360) + 360) % 360
         val cacheKey = "${pageIndex}_${safeWidth}_${normalizedRot}_${invertColors}"
 
@@ -129,43 +160,123 @@ class MuPdfDocumentHandle(
             if (!cached.isRecycled) return cached
         }
 
-        val rendered = synchronized(lock) {
-            check(!closed) { "Document is closed" }
-            val page = document.loadPage(pageIndex)
-            try {
-                val bounds = page.bounds
-                val pageWidthPt = max(1f, bounds.x1 - bounds.x0)
-                val pageHeightPt = max(1f, bounds.y1 - bounds.y0)
-                val isQuarterTurn = normalizedRot == 90 || normalizedRot == 270
-                val effectiveWidthPt = if (isQuarterTurn) pageHeightPt else pageWidthPt
-                val scale = safeWidth.toFloat() / effectiveWidthPt
-
-                val ctm = Matrix(scale, scale)
-                if (normalizedRot != 0) {
-                    ctm.rotate(normalizedRot.toFloat())
-                }
-
-                val baseBitmap = AndroidDrawDevice.drawPage(page, ctm)
-                if (invertColors) applyNightInversion(baseBitmap) else baseBitmap
-            } finally {
-                page.destroy()
-            }
-        }
-
+        val rendered = renderInternal(pageIndex, safeWidth, normalizedRot, invertColors)
         pageCache.put(cacheKey, rendered)
         return rendered
+    }
+
+    override fun renderThumbnail(pageIndex: Int, targetWidthPx: Int): Bitmap {
+        val safeWidth = targetWidthPx.coerceIn(96, 360)
+        val cacheKey = "thumb_${pageIndex}_${safeWidth}"
+        thumbCache.get(cacheKey)?.let { cached ->
+            if (!cached.isRecycled) return cached
+        }
+        val rendered = renderInternal(pageIndex, safeWidth, 0, false)
+        thumbCache.put(cacheKey, rendered)
+        return rendered
+    }
+
+    private fun renderInternal(
+        pageIndex: Int,
+        targetWidthPx: Int,
+        normalizedRot: Int,
+        invertColors: Boolean
+    ): Bitmap = synchronized(lock) {
+        check(!closed) { "Document is closed" }
+        val page = document.loadPage(pageIndex)
+        try {
+            val bounds = page.bounds
+            val pageWidthPt = max(1f, bounds.x1 - bounds.x0)
+            val pageHeightPt = max(1f, bounds.y1 - bounds.y0)
+            val isQuarterTurn = normalizedRot == 90 || normalizedRot == 270
+            val effectiveWidthPt = if (isQuarterTurn) pageHeightPt else pageWidthPt
+            val scale = targetWidthPx.toFloat() / effectiveWidthPt
+
+            val ctm = Matrix(scale, scale)
+            if (normalizedRot != 0) {
+                ctm.rotate(normalizedRot.toFloat())
+            }
+
+            val baseBitmap = AndroidDrawDevice.drawPage(page, ctm)
+            if (invertColors) applyNightInversion(baseBitmap) else baseBitmap
+        } finally {
+            page.destroy()
+        }
     }
 
     override fun searchPage(pageIndex: Int, query: String): PdfSearchHit? = synchronized(lock) {
         if (closed || query.isBlank()) return null
         val page = document.loadPage(pageIndex)
         try {
-            val quads = page.search(query)
-            if (quads != null && quads.isNotEmpty()) {
-                PdfSearchHit(pageIndex = pageIndex, quadCount = quads.size)
-            } else {
-                null
+            val bounds = page.bounds
+            val pageW = max(1f, bounds.x1 - bounds.x0)
+            val pageH = max(1f, bounds.y1 - bounds.y0)
+
+            // Supports both MuPDF Quad[] and Quad[][] return shapes safely across versions
+            val rawResult: Any? = page.search(query)
+            val quads = collectQuads(rawResult)
+            if (quads.isEmpty()) return null
+
+            val boxes = quads.map { q ->
+                val minX = minOf(q.ul_x, q.ur_x, q.ll_x, q.lr_x)
+                val maxX = maxOf(q.ul_x, q.ur_x, q.ll_x, q.lr_x)
+                val minY = minOf(q.ul_y, q.ur_y, q.ll_y, q.lr_y)
+                val maxY = maxOf(q.ul_y, q.ur_y, q.ll_y, q.lr_y)
+                PdfGeometryHelper.normalizeBox(
+                    minX = minX,
+                    minY = minY,
+                    maxX = maxX,
+                    maxY = maxY,
+                    pageLeft = bounds.x0,
+                    pageTop = bounds.y0,
+                    pageWidth = pageW,
+                    pageHeight = pageH
+                )
             }
+            PdfSearchHit(pageIndex = pageIndex, boxes = boxes)
+        } finally {
+            page.destroy()
+        }
+    }
+
+    private fun collectQuads(raw: Any?): List<Quad> {
+        val list = mutableListOf<Quad>()
+        when (raw) {
+            is Quad -> list.add(raw)
+            is Array<*> -> raw.forEach { item -> list.addAll(collectQuads(item)) }
+        }
+        return list
+    }
+
+    override fun extractPageText(pageIndex: Int): String = synchronized(lock) {
+        if (closed) return ""
+        val page = document.loadPage(pageIndex)
+        try {
+            val stext = page.toStructuredText()
+            try {
+                val sb = StringBuilder()
+                val blocks = stext.blocks ?: emptyArray()
+                for (block in blocks) {
+                    val lines = block?.lines ?: continue
+                    for (line in lines) {
+                        val chars = line?.chars ?: continue
+                        for (ch in chars) {
+                            if (ch != null && ch.c > 0) {
+                                sb.append(Character.toChars(ch.c))
+                            }
+                        }
+                        sb.append('
+')
+                    }
+                    sb.append('
+')
+                }
+                sb.toString().trim()
+            } finally {
+                stext.destroy()
+            }
+        } catch (_: Throwable) {
+            ""
         } finally {
             page.destroy()
         }
@@ -199,6 +310,7 @@ class MuPdfDocumentHandle(
             if (!closed) {
                 closed = true
                 pageCache.evictAll()
+                thumbCache.evictAll()
                 document.destroy()
             }
         }
