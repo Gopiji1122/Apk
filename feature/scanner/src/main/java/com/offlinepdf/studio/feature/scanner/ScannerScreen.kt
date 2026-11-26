@@ -3,6 +3,7 @@ package com.offlinepdf.studio.feature.scanner
 import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,6 +14,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Canvas
@@ -20,6 +22,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -50,7 +54,6 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.CameraAlt
-import androidx.compose.material.icons.outlined.Cameraswitch
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Compare
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -58,11 +61,11 @@ import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.FlashOff
 import androidx.compose.material.icons.outlined.FlashOn
+import androidx.compose.material.icons.outlined.Hd
 import androidx.compose.material.icons.outlined.PhotoLibrary
 import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RotateRight
-import androidx.compose.material.icons.outlined.Timer
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -89,22 +92,28 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -118,11 +127,13 @@ import com.offlinepdf.studio.core.imageprocessing.ExportPageSize
 import com.offlinepdf.studio.core.imageprocessing.NormalizedPoint
 import com.offlinepdf.studio.core.imageprocessing.QuadStabilityTracker
 import com.offlinepdf.studio.core.imageprocessing.ScanFilterMode
+import com.offlinepdf.studio.core.imageprocessing.ScanQualityMode
 import com.offlinepdf.studio.core.imageprocessing.ScannedPageItem
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.hypot
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -191,6 +202,7 @@ fun ScannerScreen(
                 if (active != null) {
                     CropPerspectiveStage(
                         page = active,
+                        previewRevision = state.previewRevision,
                         viewModel = viewModel
                     )
                 }
@@ -217,7 +229,6 @@ fun ScannerScreen(
             }
         }
 
-        // Non-blocking processing overlay
         if (state.isProcessing) {
             Box(
                 modifier = Modifier
@@ -251,7 +262,6 @@ fun ScannerScreen(
         }
     }
 
-    // Export Configuration Bottom Sheet
     if (showExportSheet) {
         val opts = state.exportOptions
         ModalBottomSheet(onDismissRequest = { showExportSheet = false }) {
@@ -348,7 +358,6 @@ fun ScannerScreen(
         }
     }
 
-    // Exported PDF Ready Dialog
     state.lastExportedPdfUri?.let { exportedUri ->
         AlertDialog(
             onDismissRequest = viewModel::clearLastExportedPdfUri,
@@ -389,7 +398,7 @@ private fun CameraPermissionPrompt(
         Text("Camera Permission Needed", style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Offline PDF Studio uses your camera locally to detect document edges and scan pages. Nothing is ever uploaded.",
+            "Offline PDF Studio uses your rear camera locally to detect document edges and scan pages. Nothing is ever uploaded.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -404,6 +413,13 @@ private fun CameraPermissionPrompt(
     }
 }
 
+/**
+ * Rock-solid 60 FPS CameraX Stage:
+ * - Binds CameraX ONCE via LaunchedEffect (zero blinking!)
+ * - Matches Preview + ImageCapture + ImageAnalysis with FIT_CENTER + UseCaseGroup ViewPort (WYSIWYG!)
+ * - Direct two-finger pinch-to-zoom + tap-to-focus on preview (no zoom slider, no timer, no flip)
+ * - HD / Fast quality toggle + smooth Adobe Scan-style Auto-Capture
+ */
 @Composable
 private fun CameraCaptureStage(
     state: ScannerUiState,
@@ -412,20 +428,22 @@ private fun CameraCaptureStage(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
 
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val stabilityTracker = remember { QuadStabilityTracker() }
+    val lastAnalysisMs = remember { AtomicLong(0L) }
 
     var detectedQuad by remember { mutableStateOf<DocumentQuad?>(null) }
     var stabilityProgress by remember { mutableFloatStateOf(0f) }
-    var zoomRatio by remember { mutableFloatStateOf(0f) }
-    var countdown by remember { mutableIntStateOf(0) }
+    var currentZoomRatio by remember { mutableFloatStateOf(1f) }
     var isCapturing by remember { mutableStateOf(false) }
 
     var cameraRef by remember { mutableStateOf<Camera?>(null) }
     var imageCaptureRef by remember { mutableStateOf<ImageCapture?>(null) }
     var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
+
+    val latestAutoEnabled by rememberUpdatedState(state.autoCaptureEnabled)
+    val latestFlashEnabled by rememberUpdatedState(state.flashEnabled)
 
     fun triggerCapture(quadSnapshot: DocumentQuad?) {
         val capture = imageCaptureRef ?: return
@@ -433,7 +451,7 @@ private fun CameraCaptureStage(
         isCapturing = true
         val outFile = viewModel.createCaptureTempFile()
         val outputOptions = ImageCapture.OutputFileOptions.Builder(outFile).build()
-        capture.flashMode = if (state.flashEnabled) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
+        capture.flashMode = if (latestFlashEnabled) ImageCapture.FLASH_MODE_ON else ImageCapture.FLASH_MODE_OFF
 
         capture.takePicture(
             outputOptions,
@@ -453,126 +471,109 @@ private fun CameraCaptureStage(
         )
     }
 
-    fun triggerCaptureWithTimer(quadSnapshot: DocumentQuad?) {
-        if (state.timerSeconds <= 0) {
-            triggerCapture(quadSnapshot)
-        } else {
-            scope.launch {
-                for (sec in state.timerSeconds downTo 1) {
-                    countdown = sec
-                    delay(1000)
-                }
-                countdown = 0
-                triggerCapture(quadSnapshot)
-            }
+    DisposableEffect(Unit) {
+        onDispose {
+            runCatching { ProcessCameraProvider.getInstance(context).get().unbindAll() }
+            analysisExecutor.shutdown()
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose { analysisExecutor.shutdown() }
+    // Bind CameraX ONCE when PreviewView is ready or HD/Fast mode toggles (NEVER inside AndroidView.update!)
+    LaunchedEffect(previewViewRef, state.qualityMode) {
+        val pv = previewViewRef ?: return@LaunchedEffect
+        pv.post {
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
+        cameraProviderFuture.addListener({
+            val provider = runCatching { cameraProviderFuture.get() }.getOrNull() ?: return@addListener
+
+            val preview = Preview.Builder().build().also {
+                it.surfaceProvider = pv.surfaceProvider
+            }
+
+            val captureMode = if (state.qualityMode == ScanQualityMode.HD) {
+                ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY
+            } else {
+                ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY
+            }
+            val capture = ImageCapture.Builder()
+                .setCaptureMode(captureMode)
+                .build()
+            imageCaptureRef = capture
+
+            val analysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+
+            analysis.setAnalyzer(analysisExecutor) { imageProxy ->
+                try {
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastAnalysisMs.get() < 110L) {
+                        return@setAnalyzer
+                    }
+                    lastAnalysisMs.set(now)
+
+                    val rotation = imageProxy.imageInfo.rotationDegrees
+                    val bmp = imageProxy.toBitmap()
+                    val quad = viewModel.edgeDetector.detectDocumentQuad(bmp, rotation)
+                    bmp.recycle()
+
+                    val stability = stabilityTracker.onFrame(quad)
+                    ContextCompat.getMainExecutor(context).execute {
+                        detectedQuad = stability.detectedQuad
+                        stabilityProgress = stability.progress
+                        if (latestAutoEnabled && stability.shouldAutoCapture && !isCapturing) {
+                            triggerCapture(stability.detectedQuad)
+                        }
+                    }
+                } catch (_: Throwable) {
+                    // Ignore transient analysis errors
+                } finally {
+                    imageProxy.close()
+                }
+            }
+
+            runCatching {
+                provider.unbindAll()
+                val vp = pv.viewPort
+                val boundCamera = if (vp != null) {
+                    val group = UseCaseGroup.Builder()
+                        .addUseCase(preview)
+                        .addUseCase(capture)
+                        .addUseCase(analysis)
+                        .setViewPort(vp)
+                        .build()
+                    provider.bindToLifecycle(lifecycleOwner, CameraSelector.DEFAULT_BACK_CAMERA, group)
+                } else {
+                    provider.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_BACK_CAMERA,
+                        preview,
+                        capture,
+                        analysis
+                    )
+                }
+                cameraRef = boundCamera
+                boundCamera.cameraControl.enableTorch(latestFlashEnabled)
+            }
+        }, ContextCompat.getMainExecutor(context))
+        }
     }
 
     LaunchedEffect(state.flashEnabled, cameraRef) {
         cameraRef?.cameraControl?.enableTorch(state.flashEnabled)
     }
 
-    LaunchedEffect(zoomRatio, cameraRef) {
-        cameraRef?.cameraControl?.setLinearZoom(zoomRatio.coerceIn(0f, 1f))
-    }
-
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-        // Live CameraX Preview
-        AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .pointerInput(Unit) {
-                    detectTapGestures { tapOffset ->
-                        val pv = previewViewRef ?: return@detectTapGestures
-                        val cam = cameraRef ?: return@detectTapGestures
-                        val point = pv.meteringPointFactory.createPoint(tapOffset.x, tapOffset.y)
-                        val action = FocusMeteringAction.Builder(point).build()
-                        cam.cameraControl.startFocusAndMetering(action)
-                    }
-                },
-            factory = { ctx ->
-                PreviewView(ctx).apply {
-                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
-                    scaleType = PreviewView.ScaleType.FILL_CENTER
-                    previewViewRef = this
-                }
-            },
-            update = { previewView ->
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-                cameraProviderFuture.addListener({
-                    val provider = cameraProviderFuture.get()
-                    val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = previewView.surfaceProvider
-                    }
-                    val capture = ImageCapture.Builder()
-                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                        .build()
-                    imageCaptureRef = capture
-
-                    val analysis = ImageAnalysis.Builder()
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build()
-
-                    analysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                        try {
-                            val bmp = imageProxy.toBitmap()
-                            val quad = viewModel.edgeDetector.detectDocumentQuad(bmp)
-                            bmp.recycle()
-                            val stability = stabilityTracker.onFrame(quad)
-                            ContextCompat.getMainExecutor(context).execute {
-                                detectedQuad = stability.detectedQuad
-                                stabilityProgress = stability.progress
-                                if (state.autoCaptureEnabled && stability.shouldAutoCapture && !isCapturing) {
-                                    triggerCapture(stability.detectedQuad)
-                                }
-                            }
-                        } catch (_: Throwable) {
-                            // Ignore transient frame errors so camera preview never freezes
-                        } finally {
-                            imageProxy.close()
-                        }
-                    }
-
-                    val selector = if (state.useFrontCamera) {
-                        CameraSelector.DEFAULT_FRONT_CAMERA
-                    } else {
-                        CameraSelector.DEFAULT_BACK_CAMERA
-                    }
-
-                    runCatching {
-                        provider.unbindAll()
-                        cameraRef = provider.bindToLifecycle(lifecycleOwner, selector, preview, capture, analysis)
-                    }
-                }, ContextCompat.getMainExecutor(context))
-            }
-        )
-
-        // Live Document Boundary Detection Polygon Overlay
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val q = detectedQuad ?: return@Canvas
-            val path = Path().apply {
-                moveTo(q.topLeft.x * size.width, q.topLeft.y * size.height)
-                lineTo(q.topRight.x * size.width, q.topRight.y * size.height)
-                lineTo(q.bottomRight.x * size.width, q.bottomRight.y * size.height)
-                lineTo(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
-                close()
-            }
-            val color = if (stabilityProgress >= 0.6f) Color(0xFF22C55E) else Color(0xFFF59E0B)
-            drawPath(path, color.copy(alpha = 0.22f))
-            drawPath(path, color, style = Stroke(width = 6f))
-        }
-
-        // Top Camera Toolbar
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+    ) {
+        // Minimal Top Toolbar: Auto/Manual | Flash | HD/Fast | Gallery
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0x88000000))
-                .padding(horizontal = 8.dp, vertical = 8.dp)
-                .align(Alignment.TopCenter),
+                .background(Color(0xFF101216))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -581,19 +582,21 @@ private fun CameraCaptureStage(
                 onClick = viewModel::toggleAutoCapture,
                 label = { Text(if (state.autoCaptureEnabled) "Auto" else "Manual") }
             )
-            Row {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                FilterChip(
+                    selected = state.qualityMode == ScanQualityMode.HD,
+                    onClick = viewModel::toggleQualityMode,
+                    label = { Text(state.qualityMode.displayName) },
+                    leadingIcon = {
+                        Icon(Icons.Outlined.Hd, contentDescription = null, modifier = Modifier.size(16.dp))
+                    }
+                )
                 IconButton(onClick = viewModel::toggleFlash) {
                     Icon(
                         if (state.flashEnabled) Icons.Outlined.FlashOn else Icons.Outlined.FlashOff,
                         contentDescription = "Flash",
-                        tint = Color.White
+                        tint = if (state.flashEnabled) Color(0xFFFDE047) else Color.White
                     )
-                }
-                IconButton(onClick = viewModel::cycleTimer) {
-                    Icon(Icons.Outlined.Timer, contentDescription = "Timer", tint = if (state.timerSeconds > 0) Color(0xFF93C5FD) else Color.White)
-                }
-                IconButton(onClick = viewModel::toggleCameraLens) {
-                    Icon(Icons.Outlined.Cameraswitch, contentDescription = "Switch camera", tint = Color.White)
                 }
                 IconButton(onClick = onImportGallery) {
                     Icon(Icons.Outlined.PhotoLibrary, contentDescription = "Import from gallery", tint = Color.White)
@@ -601,97 +604,211 @@ private fun CameraCaptureStage(
             }
         }
 
-        // Alignment guidance badge
-        Surface(
-            color = Color(0xAA111827),
-            shape = RoundedCornerShape(16.dp),
+        // Camera Preview Area with direct 2-finger pinch-to-zoom, tap-to-focus, and smooth quad overlay
+        Box(
             modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 68.dp)
+                .weight(1f)
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                    detectTapGestures { tapOffset ->
+                        val pv = previewViewRef ?: return@detectTapGestures
+                        val cam = cameraRef ?: return@detectTapGestures
+                        val point = pv.meteringPointFactory.createPoint(tapOffset.x, tapOffset.y)
+                        cam.cameraControl.startFocusAndMetering(FocusMeteringAction.Builder(point).build())
+                    }
+                }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitFirstDown(requireUnconsumed = false)
+                            do {
+                                val event = awaitPointerEvent()
+                                if (event.changes.count { it.pressed } >= 2) {
+                                    val zoomChange = event.calculateZoom()
+                                    val cam = cameraRef
+                                    if (cam != null && zoomChange != 1f) {
+                                        val zoomState = cam.cameraInfo.zoomState.value
+                                        val minZ = zoomState?.minZoomRatio ?: 1f
+                                        val maxZ = (zoomState?.maxZoomRatio ?: 6f).coerceAtMost(8f)
+                                        val nextZ = (currentZoomRatio * zoomChange).coerceIn(minZ, maxZ)
+                                        currentZoomRatio = nextZ
+                                        cam.cameraControl.setZoomRatio(nextZ)
+                                    }
+                                    event.changes.forEach { if (it.positionChanged()) it.consume() }
+                                }
+                            } while (event.changes.any { it.pressed })
+                        }
+                    }
+                }
         ) {
-            val guidance = when {
-                countdown > 0 -> "Capturing in $countdown..."
-                detectedQuad != null && state.autoCaptureEnabled -> "Document detected — hold steady (${(stabilityProgress * 100).toInt()}%)"
-                detectedQuad != null -> "Edges detected — tap shutter to capture"
-                else -> "Align document inside frame"
-            }
-            Text(
-                text = guidance,
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    PreviewView(ctx).apply {
+                        implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                        scaleType = PreviewView.ScaleType.FIT_CENTER
+                        previewViewRef = this
+                    }
+                }
             )
+
+            // Smooth Adobe Scan-style Document Boundary Overlay
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val q = detectedQuad ?: return@Canvas
+                val pts = listOf(
+                    Offset(q.topLeft.x * size.width, q.topLeft.y * size.height),
+                    Offset(q.topRight.x * size.width, q.topRight.y * size.height),
+                    Offset(q.bottomRight.x * size.width, q.bottomRight.y * size.height),
+                    Offset(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
+                )
+                val path = Path().apply {
+                    moveTo(pts[0].x, pts[0].y)
+                    lineTo(pts[1].x, pts[1].y)
+                    lineTo(pts[2].x, pts[2].y)
+                    lineTo(pts[3].x, pts[3].y)
+                    close()
+                }
+                val activeColor = if (stabilityProgress >= 0.55f) Color(0xFF22C55E) else Color(0xFF38BDF8)
+                drawPath(path, activeColor.copy(alpha = 0.16f))
+                drawPath(path, activeColor, style = Stroke(width = 5f))
+                pts.forEach { pt ->
+                    drawCircle(Color.White, radius = 10f, center = pt)
+                    drawCircle(activeColor, radius = 6f, center = pt)
+                }
+            }
+
+            // Clean top status pill
+            Surface(
+                color = Color(0xB8111827),
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 12.dp)
+            ) {
+                val guidance = when {
+                    detectedQuad != null && state.autoCaptureEnabled && stabilityProgress >= 0.5f ->
+                        "Hold steady..."
+                    detectedQuad != null && state.autoCaptureEnabled ->
+                        "Document detected"
+                    detectedQuad != null ->
+                        "Ready — tap shutter"
+                    else ->
+                        "Point at document (pinch to zoom)"
+                }
+                Text(
+                    text = guidance,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
+
+            // Zoom indicator pill (only shown when zoomed > 1.05x)
+            if (currentZoomRatio > 1.05f) {
+                Surface(
+                    color = Color(0xB8111827),
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp)
+                ) {
+                    Text(
+                        text = String.format("%.1fx", currentZoomRatio),
+                        color = Color.White,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+            }
         }
 
-        // Bottom Controls: Zoom + Shutter + Page Queue Badge
-        Column(
+        // Clean Bottom Shutter Bar (no cluttered zoom slider)
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xAA000000))
-                .padding(horizontal = 16.dp, vertical = 12.dp)
-                .align(Alignment.BottomCenter)
+                .background(Color(0xFF101216))
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Slider(
-                value = zoomRatio,
-                onValueChange = { zoomRatio = it },
-                valueRange = 0f..1f,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (state.pages.isNotEmpty()) {
-                    FilledTonalButton(onClick = { viewModel.openStage(ScannerStage.PAGES_REVIEW) }) {
-                        Text("${state.pages.size} Pages")
-                    }
-                } else {
-                    Spacer(Modifier.width(88.dp))
+            if (state.pages.isNotEmpty()) {
+                FilledTonalButton(onClick = { viewModel.openStage(ScannerStage.PAGES_REVIEW) }) {
+                    Text("${state.pages.size} Pages")
                 }
+            } else {
+                Spacer(Modifier.width(92.dp))
+            }
 
-                // Shutter Button
+            Box(contentAlignment = Alignment.Center) {
+                if (state.autoCaptureEnabled && stabilityProgress > 0.15f) {
+                    CircularProgressIndicator(
+                        progress = { stabilityProgress },
+                        color = Color(0xFF22C55E),
+                        strokeWidth = 4.dp,
+                        modifier = Modifier.size(76.dp)
+                    )
+                }
                 Surface(
                     shape = CircleShape,
                     color = Color.White,
                     modifier = Modifier
-                        .size(68.dp)
-                        .border(4.dp, Color(0xFF93C5FD), CircleShape)
-                        .clickable { triggerCaptureWithTimer(detectedQuad) }
+                        .size(64.dp)
+                        .border(3.dp, Color(0xFF93C5FD), CircleShape)
+                        .clickable { triggerCapture(detectedQuad) }
                 ) {
                     Box(contentAlignment = Alignment.Center) {
                         Icon(
                             Icons.Outlined.CameraAlt,
                             contentDescription = "Capture",
                             tint = Color.Black,
-                            modifier = Modifier.size(30.dp)
+                            modifier = Modifier.size(28.dp)
                         )
                     }
                 }
+            }
 
-                if (state.pages.isNotEmpty()) {
-                    Button(onClick = { viewModel.openStage(ScannerStage.PAGES_REVIEW) }) {
-                        Text("Done")
-                    }
-                } else {
-                    Spacer(Modifier.width(88.dp))
+            if (state.pages.isNotEmpty()) {
+                Button(onClick = { viewModel.openStage(ScannerStage.PAGES_REVIEW) }) {
+                    Text("Done")
                 }
+            } else {
+                Spacer(Modifier.width(92.dp))
             }
         }
     }
 }
 
+/**
+ * Computes exact rendered rectangle for ContentScale.Fit inside a Box of size [boxSize].
+ */
+private fun computeFitRect(imageW: Int, imageH: Int, boxSize: IntSize): Rect {
+    if (imageW <= 0 || imageH <= 0 || boxSize.width <= 0 || boxSize.height <= 0) {
+        return Rect(0f, 0f, boxSize.width.toFloat(), boxSize.height.toFloat())
+    }
+    val scale = min(boxSize.width.toFloat() / imageW, boxSize.height.toFloat() / imageH)
+    val drawnW = imageW * scale
+    val drawnH = imageH * scale
+    val left = (boxSize.width - drawnW) / 2f
+    val top = (boxSize.height - drawnH) / 2f
+    return Rect(left, top, left + drawnW, top + drawnH)
+}
+
 @Composable
 private fun CropPerspectiveStage(
     page: ScannedPageItem,
+    previewRevision: Int,
     viewModel: ScannerViewModel
 ) {
-    var previewBitmap by remember(page.rawImagePath) { mutableStateOf<Bitmap?>(null) }
+    var previewBitmap by remember(page.rawImagePath, previewRevision) { mutableStateOf<Bitmap?>(null) }
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
     var activeHandle by remember { mutableIntStateOf(-1) }
 
-    LaunchedEffect(page.rawImagePath) {
-        previewBitmap = viewModel.loadPreviewBitmap(page.rawImagePath, maxSide = 1280)
+    // Stable reference so pointerInput NEVER resets mid-drag!
+    val latestQuad by rememberUpdatedState(page.quad)
+
+    LaunchedEffect(page.rawImagePath, previewRevision) {
+        previewBitmap = viewModel.loadPreviewBitmap(page.rawImagePath, maxSide = 1400)
     }
 
     Column(
@@ -713,7 +830,6 @@ private fun CropPerspectiveStage(
             }
         }
 
-        // Interactive 4-corner quad editor
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -723,22 +839,30 @@ private fun CropPerspectiveStage(
         ) {
             val bmp = previewBitmap
             if (bmp != null && !bmp.isRecycled) {
+                val fitRect = remember(bmp.width, bmp.height, boxSize) {
+                    computeFitRect(bmp.width, bmp.height, boxSize)
+                }
+
+                // ContentScale.Fit preserves exact portrait aspect ratio + live fineRotation preview!
                 Image(
                     bitmap = bmp.asImageBitmap(),
                     contentDescription = "Captured document",
-                    contentScale = ContentScale.FillBounds,
-                    modifier = Modifier.fillMaxSize()
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer(rotationZ = page.fineRotationDegrees)
                 )
+
                 Canvas(
                     modifier = Modifier
                         .fillMaxSize()
-                        .pointerInput(page.quad, boxSize) {
+                        .pointerInput(boxSize, bmp.width, bmp.height) {
                             detectDragGestures(
                                 onDragStart = { start ->
-                                    if (boxSize.width == 0 || boxSize.height == 0) return@detectDragGestures
-                                    val nx = start.x / boxSize.width
-                                    val ny = start.y / boxSize.height
-                                    val corners = page.quad.asList()
+                                    if (fitRect.width <= 1f || fitRect.height <= 1f) return@detectDragGestures
+                                    val nx = ((start.x - fitRect.left) / fitRect.width).coerceIn(0f, 1f)
+                                    val ny = ((start.y - fitRect.top) / fitRect.height).coerceIn(0f, 1f)
+                                    val corners = latestQuad.asList()
                                     activeHandle = corners.indices.minByOrNull { idx ->
                                         hypot((corners[idx].x - nx).toDouble(), (corners[idx].y - ny).toDouble())
                                     } ?: -1
@@ -747,10 +871,12 @@ private fun CropPerspectiveStage(
                                 onDragCancel = { activeHandle = -1 },
                                 onDrag = { change, dragAmount ->
                                     change.consume()
-                                    if (activeHandle !in 0..3 || boxSize.width == 0 || boxSize.height == 0) return@detectDragGestures
-                                    val dx = dragAmount.x / boxSize.width
-                                    val dy = dragAmount.y / boxSize.height
-                                    val q = page.quad
+                                    if (activeHandle !in 0..3 || fitRect.width <= 1f || fitRect.height <= 1f) {
+                                        return@detectDragGestures
+                                    }
+                                    val dx = dragAmount.x / fitRect.width
+                                    val dy = dragAmount.y / fitRect.height
+                                    val q = latestQuad
                                     val updated = when (activeHandle) {
                                         0 -> q.copy(topLeft = NormalizedPoint(q.topLeft.x + dx, q.topLeft.y + dy).clamped())
                                         1 -> q.copy(topRight = NormalizedPoint(q.topRight.x + dx, q.topRight.y + dy).clamped())
@@ -764,10 +890,10 @@ private fun CropPerspectiveStage(
                 ) {
                     val q = page.quad
                     val pts = listOf(
-                        Offset(q.topLeft.x * size.width, q.topLeft.y * size.height),
-                        Offset(q.topRight.x * size.width, q.topRight.y * size.height),
-                        Offset(q.bottomRight.x * size.width, q.bottomRight.y * size.height),
-                        Offset(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
+                        Offset(fitRect.left + q.topLeft.x * fitRect.width, fitRect.top + q.topLeft.y * fitRect.height),
+                        Offset(fitRect.left + q.topRight.x * fitRect.width, fitRect.top + q.topRight.y * fitRect.height),
+                        Offset(fitRect.left + q.bottomRight.x * fitRect.width, fitRect.top + q.bottomRight.y * fitRect.height),
+                        Offset(fitRect.left + q.bottomLeft.x * fitRect.width, fitRect.top + q.bottomLeft.y * fitRect.height)
                     )
                     val path = Path().apply {
                         moveTo(pts[0].x, pts[0].y)
@@ -776,25 +902,45 @@ private fun CropPerspectiveStage(
                         lineTo(pts[3].x, pts[3].y)
                         close()
                     }
+                    drawPath(path, Color(0x3338BDF8))
                     drawPath(path, Color(0xFF38BDF8), style = Stroke(width = 5f))
-                    pts.forEach { pt ->
-                        drawCircle(Color.White, radius = 22f, center = pt)
-                        drawCircle(Color(0xFF0284C7), radius = 14f, center = pt)
+                    pts.forEachIndexed { idx, pt ->
+                        val isSelected = idx == activeHandle
+                        drawCircle(Color.White, radius = if (isSelected) 28f else 22f, center = pt)
+                        drawCircle(
+                            if (isSelected) Color(0xFF22C55E) else Color(0xFF0284C7),
+                            radius = if (isSelected) 18f else 14f,
+                            center = pt
+                        )
                     }
+                }
+
+                // Live circular Corner Magnifier Loupe while dragging any corner!
+                if (activeHandle in 0..3) {
+                    val activePt = page.quad.asList()[activeHandle]
+                    val loupeAlign = if (activePt.x < 0.5f) Alignment.TopEnd else Alignment.TopStart
+                    CornerMagnifierLoupe(
+                        source = bmp,
+                        normX = activePt.x,
+                        normY = activePt.y,
+                        modifier = Modifier
+                            .align(loupeAlign)
+                            .padding(10.dp)
+                    )
                 }
             } else {
                 CircularProgressIndicator()
             }
         }
 
-        // Fine rotation & 90° rotation
+        // Live Fine Rotation Slider & 90° Rotate Button
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                "Fine: ${page.fineRotationDegrees.toInt()}°",
+                "Tilt: ${page.fineRotationDegrees.toInt()}°",
                 color = Color.White,
                 style = MaterialTheme.typography.labelMedium
             )
@@ -834,6 +980,44 @@ private fun CropPerspectiveStage(
 }
 
 @Composable
+private fun CornerMagnifierLoupe(
+    source: Bitmap,
+    normX: Float,
+    normY: Float,
+    modifier: Modifier = Modifier
+) {
+    val cropSize = (min(source.width, source.height) * 0.22f).roundToInt().coerceIn(80, 260)
+    val cx = (normX * source.width).roundToInt()
+    val cy = (normY * source.height).roundToInt()
+    val srcLeft = (cx - cropSize / 2).coerceIn(0, (source.width - cropSize).coerceAtLeast(0))
+    val srcTop = (cy - cropSize / 2).coerceIn(0, (source.height - cropSize).coerceAtLeast(0))
+    val actualW = min(cropSize, source.width - srcLeft).coerceAtLeast(1)
+    val actualH = min(cropSize, source.height - srcTop).coerceAtLeast(1)
+
+    Box(
+        modifier = modifier
+            .size(104.dp)
+            .clip(CircleShape)
+            .border(2.5.dp, Color(0xFF38BDF8), CircleShape)
+            .background(Color.Black)
+    ) {
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            drawImage(
+                image = source.asImageBitmap(),
+                srcOffset = IntOffset(srcLeft, srcTop),
+                srcSize = IntSize(actualW, actualH),
+                dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt())
+            )
+            // Crosshair at exact corner
+            val midX = size.width / 2f
+            val midY = size.height / 2f
+            drawLine(Color(0xFF22C55E), Offset(midX - 18f, midY), Offset(midX + 18f, midY), strokeWidth = 3f)
+            drawLine(Color(0xFF22C55E), Offset(midX, midY - 18f), Offset(midX, midY + 18f), strokeWidth = 3f)
+        }
+    }
+}
+
+@Composable
 private fun EnhanceFilterStage(
     page: ScannedPageItem,
     totalPages: Int,
@@ -846,7 +1030,7 @@ private fun EnhanceFilterStage(
     val targetPath = if (showOriginal) page.warpedImagePath else page.enhancedImagePath
 
     LaunchedEffect(targetPath, previewRevision) {
-        previewBitmap = viewModel.loadPreviewBitmap(targetPath, maxSide = 1280)
+        previewBitmap = viewModel.loadPreviewBitmap(targetPath, maxSide = 1400)
     }
 
     Column(
@@ -862,14 +1046,12 @@ private fun EnhanceFilterStage(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Enhance Document", color = Color.White, style = MaterialTheme.typography.titleMedium)
-            Row {
-                FilterChip(
-                    selected = showOriginal,
-                    onClick = { showOriginal = !showOriginal },
-                    label = { Text(if (showOriginal) "Original" else "Compare") },
-                    leadingIcon = { Icon(Icons.Outlined.Compare, null, modifier = Modifier.size(16.dp)) }
-                )
-            }
+            FilterChip(
+                selected = showOriginal,
+                onClick = { showOriginal = !showOriginal },
+                label = { Text(if (showOriginal) "Original" else "Compare") },
+                leadingIcon = { Icon(Icons.Outlined.Compare, null, modifier = Modifier.size(16.dp)) }
+            )
         }
 
         Box(
@@ -891,7 +1073,6 @@ private fun EnhanceFilterStage(
             }
         }
 
-        // All 10 Professional Enhancement Modes
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             items(ScanFilterMode.entries) { mode ->
                 FilterChip(
@@ -905,7 +1086,6 @@ private fun EnhanceFilterStage(
             }
         }
 
-        // Custom Adjustment Sliders
         if (page.filterMode == ScanFilterMode.CUSTOM) {
             val c = page.customAdjustments
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
@@ -944,9 +1124,7 @@ private fun EnhanceFilterStage(
                 OutlinedButton(
                     onClick = viewModel::applyActiveFilterToAllPages,
                     modifier = Modifier.weight(1f)
-                ) {
-                    Text("Apply All")
-                }
+                ) { Text("Apply All") }
             }
             OutlinedButton(
                 onClick = { viewModel.openStage(ScannerStage.CAMERA) },
@@ -959,9 +1137,7 @@ private fun EnhanceFilterStage(
             Button(
                 onClick = { viewModel.openStage(ScannerStage.PAGES_REVIEW) },
                 modifier = Modifier.weight(1f)
-            ) {
-                Text("Review ($totalPages)")
-            }
+            ) { Text("Review ($totalPages)") }
         }
     }
 }

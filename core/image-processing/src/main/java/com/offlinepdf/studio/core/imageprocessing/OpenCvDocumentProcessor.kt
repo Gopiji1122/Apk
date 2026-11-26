@@ -2,12 +2,13 @@ package com.offlinepdf.studio.core.imageprocessing
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
+import androidx.exifinterface.media.ExifInterface
 import com.offlinepdf.studio.core.common.DefaultDispatcher
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import org.opencv.android.Utils
 import org.opencv.core.Core
-import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Point
@@ -18,6 +19,7 @@ import java.io.File
 import java.io.FileOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.abs
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -28,21 +30,84 @@ class OpenCvDocumentProcessor @Inject constructor(
 ) {
 
     /**
-     * Applies 4-point perspective warp + 90-degree & fine rotation from a disk-backed raw capture
-     * and writes the corrected result to [outputFile].
+     * Reads the EXIF orientation tag written by Android cameras (e.g. OnePlus rear camera
+     * stores portrait captures rotated 90° in landscape) and physically bakes the upright
+     * orientation into the JPEG so the document is always upright portrait and never stretched.
      */
+    suspend fun normalizeExifOrientation(filePath: String, maxSide: Int = 2800): Boolean =
+        withContext(defaultDispatcher) {
+            runCatching {
+                val exif = ExifInterface(filePath)
+                val orientation = exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+                val matrix = Matrix()
+                var needsTransform = true
+                when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> matrix.postRotate(90f)
+                    ExifInterface.ORIENTATION_ROTATE_180 -> matrix.postRotate(180f)
+                    ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
+                    ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
+                    ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
+                    ExifInterface.ORIENTATION_TRANSPOSE -> {
+                        matrix.postRotate(90f)
+                        matrix.postScale(-1f, 1f)
+                    }
+                    ExifInterface.ORIENTATION_TRANSVERSE -> {
+                        matrix.postRotate(270f)
+                        matrix.postScale(-1f, 1f)
+                    }
+                    else -> needsTransform = false
+                }
+                if (!needsTransform) return@runCatching true
+
+                val src = decodeDownsampledBitmap(filePath, maxSide = maxSide) ?: return@runCatching false
+                val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+                try {
+                    saveBitmapAsJpeg(rotated, File(filePath), quality = 95)
+                    true
+                } finally {
+                    if (rotated !== src) rotated.recycle()
+                    src.recycle()
+                }
+            }.getOrDefault(false)
+        }
+
+    /**
+     * Physically rotates a disk-backed image 90 degrees clockwise so the Crop screen
+     * updates upright immediately without any aspect-ratio distortion.
+     */
+    suspend fun rotateFile90Clockwise(filePath: String, maxSide: Int = 2800): Boolean =
+        withContext(defaultDispatcher) {
+            runCatching {
+                val src = decodeDownsampledBitmap(filePath, maxSide = maxSide) ?: return@runCatching false
+                val matrix = Matrix().apply { postRotate(90f) }
+                val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
+                try {
+                    saveBitmapAsJpeg(rotated, File(filePath), quality = 95)
+                    true
+                } finally {
+                    if (rotated !== src) rotated.recycle()
+                    src.recycle()
+                }
+            }.getOrDefault(false)
+        }
+
     suspend fun warpAndRotate(
         rawFilePath: String,
         outputFile: File,
         quad: DocumentQuad,
         rotationDegrees: Int = 0,
-        fineRotationDegrees: Float = 0f
+        fineRotationDegrees: Float = 0f,
+        qualityMode: ScanQualityMode = ScanQualityMode.FAST
     ): Boolean = withContext(defaultDispatcher) {
         if (!OpenCvInitializer.ensureInitialized()) return@withContext false
-        val bitmap = decodeDownsampledBitmap(rawFilePath, maxSide = 2200) ?: return@withContext false
+        val maxSide = qualityMode.maxProcessSide
+        val bitmap = decodeDownsampledBitmap(rawFilePath, maxSide = maxSide) ?: return@withContext false
 
         val src = Mat()
-        var warped = Mat()
+        val warped = Mat()
         var rotated = Mat()
         var transform: Mat? = null
         var srcPts: MatOfPoint2f? = null
@@ -60,11 +125,11 @@ class OpenCvDocumentProcessor @Inject constructor(
 
             val widthTop = hypot(tr.x - tl.x, tr.y - tl.y)
             val widthBottom = hypot(br.x - bl.x, br.y - bl.y)
-            val maxW = max(widthTop, widthBottom).roundToInt().coerceIn(320, 2200)
+            val maxW = max(widthTop, widthBottom).roundToInt().coerceIn(320, maxSide)
 
             val heightLeft = hypot(bl.x - tl.x, bl.y - tl.y)
             val heightRight = hypot(br.x - tr.x, br.y - tr.y)
-            val maxH = max(heightLeft, heightRight).roundToInt().coerceIn(320, 2800)
+            val maxH = max(heightLeft, heightRight).roundToInt().coerceIn(320, (maxSide * 1.4).toInt())
 
             srcPts = MatOfPoint2f(tl, tr, br, bl)
             dstPts = MatOfPoint2f(
@@ -77,7 +142,6 @@ class OpenCvDocumentProcessor @Inject constructor(
             transform = Imgproc.getPerspectiveTransform(srcPts, dstPts)
             Imgproc.warpPerspective(src, warped, transform, Size(maxW.toDouble(), maxH.toDouble()))
 
-            // Apply 90-degree rotation steps
             val normRot = ((rotationDegrees % 360) + 360) % 360
             when (normRot) {
                 90 -> Core.rotate(warped, rotated, Core.ROTATE_90_CLOCKWISE)
@@ -86,8 +150,7 @@ class OpenCvDocumentProcessor @Inject constructor(
                 else -> warped.copyTo(rotated)
             }
 
-            // Apply optional fine rotation (-15..+15 deg)
-            if (kotlin.math.abs(fineRotationDegrees) > 0.25f) {
+            if (abs(fineRotationDegrees) > 0.25f) {
                 val center = Point(rotated.cols() / 2.0, rotated.rows() / 2.0)
                 val rotMat = Imgproc.getRotationMatrix2D(center, -fineRotationDegrees.toDouble(), 1.0)
                 val fineOut = Mat()
@@ -108,7 +171,7 @@ class OpenCvDocumentProcessor @Inject constructor(
                 }
             }
 
-            saveMatAsJpeg(rotated, outputFile, quality = 94)
+            saveMatAsJpeg(rotated, outputFile, quality = qualityMode.jpegQuality)
             true
         } catch (_: Throwable) {
             false
@@ -123,15 +186,12 @@ class OpenCvDocumentProcessor @Inject constructor(
         }
     }
 
-    /**
-     * Applies any of the 10 professional enhancement modes on a disk-backed image
-     * and writes the enhanced result to [outputFile].
-     */
     suspend fun enhanceDocument(
         sourceFilePath: String,
         outputFile: File,
         mode: ScanFilterMode,
-        custom: CustomAdjustments = CustomAdjustments()
+        custom: CustomAdjustments = CustomAdjustments(),
+        qualityMode: ScanQualityMode = ScanQualityMode.FAST
     ): Boolean = withContext(defaultDispatcher) {
         if (!OpenCvInitializer.ensureInitialized()) return@withContext false
         if (mode == ScanFilterMode.ORIGINAL_COLOR) {
@@ -139,7 +199,8 @@ class OpenCvDocumentProcessor @Inject constructor(
             return@withContext true
         }
 
-        val bitmap = decodeDownsampledBitmap(sourceFilePath, maxSide = 2200) ?: return@withContext false
+        val bitmap = decodeDownsampledBitmap(sourceFilePath, maxSide = qualityMode.maxProcessSide)
+            ?: return@withContext false
         val rgba = Mat()
         val rgb = Mat()
         var resultRgb = Mat()
@@ -164,7 +225,7 @@ class OpenCvDocumentProcessor @Inject constructor(
             val outRgba = Mat()
             try {
                 Imgproc.cvtColor(resultRgb, outRgba, Imgproc.COLOR_RGB2RGBA)
-                saveMatAsJpeg(outRgba, outputFile, quality = 92)
+                saveMatAsJpeg(outRgba, outputFile, quality = qualityMode.jpegQuality)
             } finally {
                 outRgba.release()
             }
@@ -200,9 +261,6 @@ class OpenCvDocumentProcessor @Inject constructor(
         }
     }
 
-    /**
-     * Illumination normalization & shadow removal while preserving colored ink & handwriting.
-     */
     private fun applyDocumentColor(rgb: Mat): Mat {
         val channels = mutableListOf<Mat>()
         val normalized = mutableListOf<Mat>()
@@ -267,13 +325,9 @@ class OpenCvDocumentProcessor @Inject constructor(
             Imgproc.cvtColor(rgb, gray, Imgproc.COLOR_RGB2GRAY)
             Imgproc.GaussianBlur(gray, blur, Size(3.0, 3.0), 0.0)
             Imgproc.adaptiveThreshold(
-                blur,
-                bw,
-                255.0,
+                blur, bw, 255.0,
                 Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
-                Imgproc.THRESH_BINARY,
-                25,
-                11.0
+                Imgproc.THRESH_BINARY, 25, 11.0
             )
             Imgproc.cvtColor(bw, out, Imgproc.COLOR_GRAY2RGB)
             out
@@ -351,11 +405,7 @@ class OpenCvDocumentProcessor @Inject constructor(
             channels[1].convertTo(channels[1], -1, custom.saturation.toDouble(), 0.0)
             Core.merge(channels, merged)
             Imgproc.cvtColor(merged, satOut, Imgproc.COLOR_HSV2RGB)
-            if (custom.sharpness > 0.05f) {
-                sharpenMat(satOut, custom.sharpness)
-            } else {
-                satOut.clone()
-            }
+            if (custom.sharpness > 0.05f) sharpenMat(satOut, custom.sharpness) else satOut.clone()
         } finally {
             adjusted.release()
             channels.forEach { it.release() }
@@ -381,18 +431,22 @@ class OpenCvDocumentProcessor @Inject constructor(
         val outBmp = Bitmap.createBitmap(rgbaMat.cols(), rgbaMat.rows(), Bitmap.Config.ARGB_8888)
         try {
             Utils.matToBitmap(rgbaMat, outBmp)
-            outFile.parentFile?.mkdirs()
-            val tmp = File(outFile.parentFile, "${outFile.name}.tmp")
-            FileOutputStream(tmp).use { fos ->
-                outBmp.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(50, 100), fos)
-            }
-            if (outFile.exists()) outFile.delete()
-            if (!tmp.renameTo(outFile)) {
-                tmp.copyTo(outFile, overwrite = true)
-                tmp.delete()
-            }
+            saveBitmapAsJpeg(outBmp, outFile, quality)
         } finally {
             outBmp.recycle()
+        }
+    }
+
+    private fun saveBitmapAsJpeg(bitmap: Bitmap, outFile: File, quality: Int) {
+        outFile.parentFile?.mkdirs()
+        val tmp = File(outFile.parentFile, "${outFile.name}.tmp")
+        FileOutputStream(tmp).use { fos ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(50, 100), fos)
+        }
+        if (outFile.exists()) outFile.delete()
+        if (!tmp.renameTo(outFile)) {
+            tmp.copyTo(outFile, overwrite = true)
+            tmp.delete()
         }
     }
 

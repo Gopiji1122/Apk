@@ -8,12 +8,13 @@ data class NormalizedPoint(
     val y: Float
 ) {
     fun clamped(): NormalizedPoint = NormalizedPoint(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))
+
+    fun lerp(target: NormalizedPoint, alpha: Float): NormalizedPoint = NormalizedPoint(
+        x = x + (target.x - x) * alpha,
+        y = y + (target.y - y) * alpha
+    ).clamped()
 }
 
-/**
- * Four document corners in normalized [0f..1f] image coordinates:
- * topLeft -> topRight -> bottomRight -> bottomLeft.
- */
 data class DocumentQuad(
     val topLeft: NormalizedPoint,
     val topRight: NormalizedPoint,
@@ -21,6 +22,18 @@ data class DocumentQuad(
     val bottomLeft: NormalizedPoint
 ) {
     fun asList(): List<NormalizedPoint> = listOf(topLeft, topRight, bottomRight, bottomLeft)
+
+    fun lerp(target: DocumentQuad, alpha: Float): DocumentQuad = DocumentQuad(
+        topLeft = topLeft.lerp(target.topLeft, alpha),
+        topRight = topRight.lerp(target.topRight, alpha),
+        bottomRight = bottomRight.lerp(target.bottomRight, alpha),
+        bottomLeft = bottomLeft.lerp(target.bottomLeft, alpha)
+    )
+
+    fun rotated90Clockwise(): DocumentQuad {
+        fun rot(p: NormalizedPoint) = NormalizedPoint(1f - p.y, p.x).clamped()
+        return DocumentQuad.fromUnordered(asList().map(::rot))
+    }
 
     fun maxCornerDelta(other: DocumentQuad): Float {
         return max(
@@ -36,16 +49,13 @@ data class DocumentQuad(
     }
 
     companion object {
-        fun fullFrame(inset: Float = 0.04f): DocumentQuad = DocumentQuad(
+        fun fullFrame(inset: Float = 0.05f): DocumentQuad = DocumentQuad(
             topLeft = NormalizedPoint(inset, inset),
             topRight = NormalizedPoint(1f - inset, inset),
             bottomRight = NormalizedPoint(1f - inset, 1f - inset),
             bottomLeft = NormalizedPoint(inset, 1f - inset)
         )
 
-        /**
-         * Orders four arbitrary points into canonical [topLeft, topRight, bottomRight, bottomLeft].
-         */
         fun fromUnordered(points: List<NormalizedPoint>): DocumentQuad {
             require(points.size == 4) { "DocumentQuad requires exactly 4 points" }
             val bySum = points.sortedBy { it.x + it.y }
@@ -64,6 +74,15 @@ data class DocumentQuad(
     }
 }
 
+enum class ScanQualityMode(
+    val displayName: String,
+    val maxProcessSide: Int,
+    val jpegQuality: Int
+) {
+    FAST("Fast", 1800, 88),
+    HD("HD", 2800, 96)
+}
+
 enum class ScanFilterMode(val displayName: String) {
     ORIGINAL_COLOR("Original"),
     AUTO_COLOR("Auto Color"),
@@ -78,10 +97,10 @@ enum class ScanFilterMode(val displayName: String) {
 }
 
 data class CustomAdjustments(
-    val brightness: Float = 0f,      // -60f .. +60f
-    val contrast: Float = 1.0f,      // 0.5f .. 2.0f
-    val saturation: Float = 1.0f,    // 0.0f .. 2.0f
-    val sharpness: Float = 0.0f      // 0.0f .. 1.5f
+    val brightness: Float = 0f,
+    val contrast: Float = 1.0f,
+    val saturation: Float = 1.0f,
+    val sharpness: Float = 0.0f
 )
 
 enum class ExportFormat(val displayName: String, val mimeType: String, val extension: String) {
@@ -116,13 +135,9 @@ data class ExportOptions(
     val pageSize: ExportPageSize = ExportPageSize.A4,
     val orientation: ExportOrientation = ExportOrientation.AUTO,
     val margin: ExportMargin = ExportMargin.NONE,
-    val jpegQuality: Int = 85
+    val jpegQuality: Int = 88
 )
 
-/**
- * Disk-backed scanned page descriptor. Full-resolution bitmaps are never kept in RAM;
- * only lightweight local file paths are stored so users can scan unlimited pages safely.
- */
 data class ScannedPageItem(
     val id: String,
     val rawImagePath: String,

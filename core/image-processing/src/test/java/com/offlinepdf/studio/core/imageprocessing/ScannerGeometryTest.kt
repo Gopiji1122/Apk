@@ -49,4 +49,16 @@ class ScannerGeometryTest {
         )
         assertEquals(842 to 595, landscape)
     }
+
+    @Test
+    fun rotated90Clockwise_andLerp_keepValidUnitBounds() {
+        val q1 = DocumentQuad.fullFrame(0.1f)
+        val q2 = q1.rotated90Clockwise()
+        q2.asList().forEach { p ->
+            assertTrue(p.x in 0f..1f)
+            assertTrue(p.y in 0f..1f)
+        }
+        val mid = q1.lerp(DocumentQuad.fullFrame(0.2f), 0.5f)
+        assertEquals(0.15f, mid.topLeft.x, 0.001f)
+    }
 }

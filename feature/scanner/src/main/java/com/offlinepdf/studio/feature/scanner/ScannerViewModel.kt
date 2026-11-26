@@ -14,6 +14,7 @@ import com.offlinepdf.studio.core.imageprocessing.ExportOptions
 import com.offlinepdf.studio.core.imageprocessing.OpenCvDocumentProcessor
 import com.offlinepdf.studio.core.imageprocessing.ScanExportEngine
 import com.offlinepdf.studio.core.imageprocessing.ScanFilterMode
+import com.offlinepdf.studio.core.imageprocessing.ScanQualityMode
 import com.offlinepdf.studio.core.imageprocessing.ScannedPageItem
 import com.offlinepdf.studio.core.storage.SafDocumentRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -48,8 +49,7 @@ data class ScannerUiState(
     val processingMessage: String = "",
     val autoCaptureEnabled: Boolean = true,
     val flashEnabled: Boolean = false,
-    val useFrontCamera: Boolean = false,
-    val timerSeconds: Int = 0,
+    val qualityMode: ScanQualityMode = ScanQualityMode.FAST,
     val exportOptions: ExportOptions = ExportOptions(
         title = "Scan_" + SimpleDateFormat("yyyyMMdd_HHmm", Locale.US).format(Date())
     ),
@@ -92,18 +92,13 @@ class ScannerViewModel @Inject constructor(
         _uiState.update { it.copy(flashEnabled = !it.flashEnabled) }
     }
 
-    fun toggleCameraLens() {
-        _uiState.update { it.copy(useFrontCamera = !it.useFrontCamera, flashEnabled = false) }
-    }
-
-    fun cycleTimer() {
+    fun toggleQualityMode() {
         _uiState.update {
-            val next = when (it.timerSeconds) {
-                0 -> 3
-                3 -> 5
-                else -> 0
-            }
-            it.copy(timerSeconds = next)
+            val next = if (it.qualityMode == ScanQualityMode.FAST) ScanQualityMode.HD else ScanQualityMode.FAST
+            it.copy(
+                qualityMode = next,
+                statusMessage = if (next == ScanQualityMode.HD) "HD Mode: Maximum sharpness" else "Fast Mode: Quick capture"
+            )
         }
     }
 
@@ -112,21 +107,25 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun onRawPhotoCaptured(rawFile: File, detectedQuad: DocumentQuad?) {
+        val qMode = _uiState.value.qualityMode
         viewModelScope.launch {
-            _uiState.update { it.copy(isProcessing = true, processingMessage = "Detecting edges...") }
+            _uiState.update { it.copy(isProcessing = true, processingMessage = "Preparing upright scan...") }
             val pageItem = withContext(ioDispatcher) {
+                // Fix #9: Bake EXIF orientation into the raw file immediately so portrait stays portrait!
+                processor.normalizeExifOrientation(rawFile.absolutePath, maxSide = qMode.maxProcessSide)
+
                 val id = UUID.randomUUID().toString().take(12)
                 val quad = detectedQuad ?: run {
                     val bmp = processor.decodeDownsampledBitmap(rawFile.absolutePath, 640)
-                    val found = bmp?.let { edgeDetector.detectDocumentQuad(it) }
+                    val found = bmp?.let { edgeDetector.detectDocumentQuad(it, 0) }
                     bmp?.recycle()
                     found ?: DocumentQuad.fullFrame()
                 }
                 val warpedFile = File(sessionDir, "${id}_warped.jpg")
                 val enhancedFile = File(sessionDir, "${id}_enhanced.jpg")
 
-                processor.warpAndRotate(rawFile.absolutePath, warpedFile, quad, 0, 0f)
-                processor.enhanceDocument(warpedFile.absolutePath, enhancedFile, ScanFilterMode.AUTO_COLOR)
+                processor.warpAndRotate(rawFile.absolutePath, warpedFile, quad, 0, 0f, qMode)
+                processor.enhanceDocument(warpedFile.absolutePath, enhancedFile, ScanFilterMode.AUTO_COLOR, qualityMode = qMode)
 
                 ScannedPageItem(
                     id = id,
@@ -154,6 +153,7 @@ class ScannerViewModel @Inject constructor(
 
     fun importGalleryImages(uris: List<Uri>) {
         if (uris.isEmpty()) return
+        val qMode = _uiState.value.qualityMode
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessing = true, processingMessage = "Importing ${uris.size} image(s)...") }
             val imported = withContext(ioDispatcher) {
@@ -164,15 +164,17 @@ class ScannerViewModel @Inject constructor(
                             FileOutputStream(rawFile).use { output -> input.copyTo(output) }
                         } ?: return@mapNotNull null
 
+                        processor.normalizeExifOrientation(rawFile.absolutePath, maxSide = qMode.maxProcessSide)
+
                         val bmp = processor.decodeDownsampledBitmap(rawFile.absolutePath, 640)
-                        val quad = bmp?.let { edgeDetector.detectDocumentQuad(it) } ?: DocumentQuad.fullFrame()
+                        val quad = bmp?.let { edgeDetector.detectDocumentQuad(it, 0) } ?: DocumentQuad.fullFrame()
                         bmp?.recycle()
 
                         val id = UUID.randomUUID().toString().take(12)
                         val warpedFile = File(sessionDir, "${id}_warped.jpg")
                         val enhancedFile = File(sessionDir, "${id}_enhanced.jpg")
-                        processor.warpAndRotate(rawFile.absolutePath, warpedFile, quad, 0, 0f)
-                        processor.enhanceDocument(warpedFile.absolutePath, enhancedFile, ScanFilterMode.AUTO_COLOR)
+                        processor.warpAndRotate(rawFile.absolutePath, warpedFile, quad, 0, 0f, qMode)
+                        processor.enhanceDocument(warpedFile.absolutePath, enhancedFile, ScanFilterMode.AUTO_COLOR, qualityMode = qMode)
 
                         ScannedPageItem(
                             id = id,
@@ -205,7 +207,7 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun resetActiveQuad() {
-        updateActivePage { it.copy(quad = DocumentQuad.fullFrame(0.02f), fineRotationDegrees = 0f) }
+        updateActivePage { it.copy(quad = DocumentQuad.fullFrame(0.03f), fineRotationDegrees = 0f) }
     }
 
     fun autoDetectActiveQuad() {
@@ -213,7 +215,7 @@ class ScannerViewModel @Inject constructor(
         viewModelScope.launch {
             val detected = withContext(ioDispatcher) {
                 val bmp = processor.decodeDownsampledBitmap(active.rawImagePath, 640)
-                val q = bmp?.let { edgeDetector.detectDocumentQuad(it) }
+                val q = bmp?.let { edgeDetector.detectDocumentQuad(it, 0) }
                 bmp?.recycle()
                 q ?: DocumentQuad.fullFrame()
             }
@@ -221,8 +223,27 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Physically rotates the raw capture 90° clockwise and rotates the quad to match,
+     * giving instant, zero-stretch visual feedback on the Crop screen!
+     */
     fun rotateActivePage90() {
-        updateActivePage { it.copy(rotationDegrees = (it.rotationDegrees + 90) % 360) }
+        val active = _uiState.value.activePage ?: return
+        val qMode = _uiState.value.qualityMode
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessing = true, processingMessage = "Rotating...") }
+            withContext(ioDispatcher) {
+                processor.rotateFile90Clockwise(active.rawImagePath, maxSide = qMode.maxProcessSide)
+            }
+            updateActivePage { it.copy(quad = it.quad.rotated90Clockwise()) }
+            _uiState.update {
+                it.copy(
+                    isProcessing = false,
+                    processingMessage = "",
+                    previewRevision = it.previewRevision + 1
+                )
+            }
+        }
     }
 
     fun setActiveFineRotation(degrees: Float) {
@@ -231,6 +252,7 @@ class ScannerViewModel @Inject constructor(
 
     fun applyCropAndProceedToEnhance() {
         val active = _uiState.value.activePage ?: return
+        val qMode = _uiState.value.qualityMode
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessing = true, processingMessage = "Correcting perspective...") }
             withContext(ioDispatcher) {
@@ -238,14 +260,16 @@ class ScannerViewModel @Inject constructor(
                     rawFilePath = active.rawImagePath,
                     outputFile = File(active.warpedImagePath),
                     quad = active.quad,
-                    rotationDegrees = active.rotationDegrees,
-                    fineRotationDegrees = active.fineRotationDegrees
+                    rotationDegrees = 0,
+                    fineRotationDegrees = active.fineRotationDegrees,
+                    qualityMode = qMode
                 )
                 processor.enhanceDocument(
                     sourceFilePath = active.warpedImagePath,
                     outputFile = File(active.enhancedImagePath),
                     mode = active.filterMode,
-                    custom = active.customAdjustments
+                    custom = active.customAdjustments,
+                    qualityMode = qMode
                 )
             }
             _uiState.update {
@@ -273,6 +297,7 @@ class ScannerViewModel @Inject constructor(
     }
 
     private fun reprocessEnhanced(item: ScannedPageItem) {
+        val qMode = _uiState.value.qualityMode
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessing = true, processingMessage = "Enhancing...") }
             withContext(ioDispatcher) {
@@ -280,7 +305,8 @@ class ScannerViewModel @Inject constructor(
                     sourceFilePath = item.warpedImagePath,
                     outputFile = File(item.enhancedImagePath),
                     mode = item.filterMode,
-                    custom = item.customAdjustments
+                    custom = item.customAdjustments,
+                    qualityMode = qMode
                 )
             }
             _uiState.update {
@@ -298,6 +324,7 @@ class ScannerViewModel @Inject constructor(
         val mode = active.filterMode
         val custom = active.customAdjustments
         val allPages = _uiState.value.pages
+        val qMode = _uiState.value.qualityMode
         if (allPages.isEmpty()) return
 
         viewModelScope.launch {
@@ -305,7 +332,7 @@ class ScannerViewModel @Inject constructor(
             val updatedPages = withContext(ioDispatcher) {
                 allPages.map { p ->
                     val next = p.copy(filterMode = mode, customAdjustments = custom)
-                    processor.enhanceDocument(next.warpedImagePath, File(next.enhancedImagePath), mode, custom)
+                    processor.enhanceDocument(next.warpedImagePath, File(next.enhancedImagePath), mode, custom, qMode)
                     next
                 }
             }
@@ -373,27 +400,19 @@ class ScannerViewModel @Inject constructor(
 
     fun rotatePageInQueue(index: Int) {
         val page = _uiState.value.pages.getOrNull(index) ?: return
-        val rotated = page.copy(rotationDegrees = (page.rotationDegrees + 90) % 360)
+        val qMode = _uiState.value.qualityMode
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessing = true, processingMessage = "Rotating page...") }
             withContext(ioDispatcher) {
-                processor.warpAndRotate(
-                    rotated.rawImagePath,
-                    File(rotated.warpedImagePath),
-                    rotated.quad,
-                    rotated.rotationDegrees,
-                    rotated.fineRotationDegrees
-                )
-                processor.enhanceDocument(
-                    rotated.warpedImagePath,
-                    File(rotated.enhancedImagePath),
-                    rotated.filterMode,
-                    rotated.customAdjustments
-                )
+                processor.rotateFile90Clockwise(page.rawImagePath, maxSide = qMode.maxProcessSide)
+                processor.rotateFile90Clockwise(page.warpedImagePath, maxSide = qMode.maxProcessSide)
+                processor.rotateFile90Clockwise(page.enhancedImagePath, maxSide = qMode.maxProcessSide)
             }
             _uiState.update { state ->
                 val list = state.pages.toMutableList()
-                if (index in list.indices) list[index] = rotated
+                if (index in list.indices) {
+                    list[index] = list[index].copy(quad = list[index].quad.rotated90Clockwise())
+                }
                 state.copy(
                     pages = list,
                     isProcessing = false,
@@ -446,7 +465,6 @@ class ScannerViewModel @Inject constructor(
                     storageRepository.registerScannedPdf(destinationUri, fileName, pages.size)
                     exportedPdfUri = destinationUri.toString()
                 }
-                // Preserve originals until export succeeds; now clean temporary session files safely.
                 withContext(ioDispatcher) {
                     sessionDir.listFiles()?.forEach { it.delete() }
                 }
@@ -473,7 +491,7 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
-    suspend fun loadPreviewBitmap(path: String, maxSide: Int = 1080): Bitmap? =
+    suspend fun loadPreviewBitmap(path: String, maxSide: Int = 1280): Bitmap? =
         withContext(ioDispatcher) { processor.decodeDownsampledBitmap(path, maxSide) }
 
     fun clearStatusMessage() {
