@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ऑफ़लाइन पीडीएफ स्टूडियो</string>
+    <string name="nav_home">होम</string>
+    <string name="nav_files">फ़ाइलें</string>
+    <string name="nav_scan">स्कैन</string>
+    <string name="nav_tools">टूल्स</string>
+    <string name="nav_settings">सेटिंग्स</string>
+</resources>

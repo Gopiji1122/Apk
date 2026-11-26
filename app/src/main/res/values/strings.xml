@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Aura PDF Editor</string>
+    <string name="app_name">Offline PDF Studio</string>
+    <string name="nav_home">Home</string>
+    <string name="nav_files">Files</string>
+    <string name="nav_scan">Scan</string>
+    <string name="nav_tools">Tools</string>
+    <string name="nav_settings">Settings</string>
 </resources>
