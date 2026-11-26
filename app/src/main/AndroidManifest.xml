@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Zero internet, zero tracking, zero broad storage permissions. Uses SAF only. -->
+    <!-- Camera permission only for offline document scanning. Still zero internet & zero broad storage permissions. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
 
     <application
         android:name=".OfflinePdfStudioApp"

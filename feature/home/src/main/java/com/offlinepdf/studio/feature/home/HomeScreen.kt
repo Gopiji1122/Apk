@@ -86,7 +86,7 @@ fun HomeScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                PhaseBadge(label = "Phase 2", active = true)
+                PhaseBadge(label = "Phase 3", active = true)
             }
         }
 
@@ -181,8 +181,8 @@ fun HomeScreen(
                 item {
                     QuickActionCard(
                         title = "Quick Scan",
-                        badge = "Phase 3",
-                        active = false,
+                        badge = "Live",
+                        active = true,
                         onClick = onNavigateToScanner
                     )
                 }

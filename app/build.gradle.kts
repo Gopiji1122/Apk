@@ -14,8 +14,8 @@ android {
         applicationId = "com.offlinepdf.studio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "1.2.1-phase2"
+        versionCode = 7
+        versionName = "1.3.0-phase3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "hi")
@@ -81,6 +81,7 @@ dependencies {
     implementation(project(":core:database"))
     implementation(project(":core:storage"))
     implementation(project(":core:pdf"))
+    implementation(project(":core:image-processing"))
 
     implementation(project(":feature:home"))
     implementation(project(":feature:files"))

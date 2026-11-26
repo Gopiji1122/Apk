@@ -140,7 +140,7 @@ fun StudioNavHost(
                 FilesScreen(onOpenDocument = ::openReaderInApp)
             }
             composable(TopDestination.SCAN.route) {
-                ScannerScreen()
+                ScannerScreen(onOpenExportedPdf = ::openReaderInApp)
             }
             composable(TopDestination.TOOLS.route) {
                 ToolsScreen()

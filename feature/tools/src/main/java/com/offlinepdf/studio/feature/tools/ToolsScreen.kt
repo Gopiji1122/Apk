@@ -27,7 +27,7 @@ private data class ToolRoadmapItem(
 
 private val TOOL_ITEMS = listOf(
     ToolRoadmapItem("Professional MuPDF Reader", "Vertical, horizontal & two-page modes, zoom presets, thumbnails, TOC, bookmarks, search highlights, text copy & immersive mode.", "Phase 2 — Live", true),
-    ToolRoadmapItem("Document Scanner", "CameraX + OpenCV edge detection, perspective crop, 10 filters, unlimited pages.", "Phase 3", false),
+    ToolRoadmapItem("Document Scanner", "CameraX + OpenCV auto edge detection, 4-corner perspective crop, 10 filters, unlimited pages & PDF/JPEG/PNG export.", "Phase 3 — Live", true),
     ToolRoadmapItem("Offline OCR (EN + HI)", "Tesseract4Android Devanagari + English text extraction & searchable PDF.", "Phase 4", false),
     ToolRoadmapItem("PDF Annotations", "Highlight, underline, freehand ink, notes, shapes in PDF-space coordinates.", "Phase 5", false),
     ToolRoadmapItem("PDF Content Editor", "Add/edit supported text, images, links, and layout overlays.", "Phase 6", false),

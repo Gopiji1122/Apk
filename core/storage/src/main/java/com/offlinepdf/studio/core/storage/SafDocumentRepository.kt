@@ -223,4 +223,18 @@ class SafDocumentRepository @Inject constructor(
             }.getOrDefault(false)
         }
 
+
+    suspend fun registerScannedPdf(uri: Uri, fallbackName: String, pageCount: Int): DocumentEntity =
+        withContext(ioDispatcher) {
+            val base = importPickedDocument(uri, pageCount = pageCount)
+            val updated = base.copy(
+                displayName = base.displayName.ifBlank { fallbackName },
+                pageCount = pageCount,
+                isScanned = true,
+                folderName = "Scanned"
+            )
+            documentDao.upsert(updated)
+            updated
+        }
+
 }

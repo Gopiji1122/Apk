@@ -6,6 +6,9 @@
     <init>(...);
 }
 
+# Preserve OpenCV JNI classes
+-keep class org.opencv.** { *; }
+
 # Preserve Room & Hilt generated classes
 -keep class * extends androidx.room.RoomDatabase
 -dontwarn org.jetbrains.annotations.**
