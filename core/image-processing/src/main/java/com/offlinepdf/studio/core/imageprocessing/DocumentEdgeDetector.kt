@@ -49,7 +49,13 @@ class QuadStabilityTracker(
     )
 
     fun onFrame(rawQuad: DocumentQuad?, nowMillis: Long = System.currentTimeMillis()): StabilityState {
-        return onFrameEvaluated(FrameDetectionResult(rawQuad, confidence = if (rawQuad != null) 0.85f else 0f), nowMillis)
+        return onFrameEvaluated(
+            result = FrameDetectionResult(
+                quad = rawQuad,
+                confidence = if (rawQuad != null) 0.85f else 0f
+            ),
+            nowMillis = nowMillis
+        )
     }
 
     fun onFrameEvaluated(

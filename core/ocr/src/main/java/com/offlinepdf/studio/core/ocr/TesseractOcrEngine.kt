@@ -137,7 +137,7 @@ class TesseractOcrEngine @Inject constructor(
                     ?: return@withContext OcrRunResult.Error("Could not decode page #${idx + 1} for OCR.")
                 try {
                     tess.setImage(bmp)
-                    val text = tess.utF8Text.orEmpty().trim()
+                    val text = tess.getUTF8Text().orEmpty().trim()
                     val words = extractWordBoxes(tess, bmp.width.toFloat(), bmp.height.toFloat())
                     results.add(PageOcrResult(pageIndex = idx, fullText = text, words = words))
                 } finally {
