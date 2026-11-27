@@ -16,3 +16,7 @@
 # Preserve Room & Hilt generated classes
 -keep class * extends androidx.room.RoomDatabase
 -dontwarn org.jetbrains.annotations.**
+
+# ONNX Runtime Android (DocAligner Neural Corner Detector)
+-keep class ai.onnxruntime.** { *; }
+-dontwarn ai.onnxruntime.**

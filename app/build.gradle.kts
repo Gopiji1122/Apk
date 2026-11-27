@@ -14,8 +14,8 @@ android {
         applicationId = "com.offlinepdf.studio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 11
-        versionName = "2.0.0-scanner-pro"
+        versionCode = 12
+        versionName = "3.0.0-scanner-neural"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "hi")

@@ -79,7 +79,7 @@ fun StudioNavHost(
 
     val isExternalLaunch = !initialDocumentUri.isNullOrBlank()
     val startDestination = if (isExternalLaunch) EXTERNAL_READER_ROUTE else TopDestination.HOME.route
-    val showBottomBar = !isExternalLaunch && TopDestination.entries.any { it.route == currentRoute }
+    val showBottomBar = !isExternalLaunch && currentRoute != TopDestination.SCAN.route && TopDestination.entries.any { it.route == currentRoute }
 
     fun navigateToTopTab(route: String) {
         if (currentRoute == route) return
@@ -152,7 +152,10 @@ fun StudioNavHost(
                 FilesScreen(onOpenDocument = ::openReaderInApp)
             }
             composable(TopDestination.SCAN.route) {
-                ScannerScreen(onOpenExportedPdf = ::openReaderInApp)
+                ScannerScreen(
+                    onOpenExportedPdf = ::openReaderInApp,
+                    onNavigateHome = { navigateToTopTab(TopDestination.HOME.route) }
+                )
             }
             composable(TopDestination.TOOLS.route) {
                 ToolsScreen()
