@@ -28,13 +28,18 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            val storePath = System.getenv("RELEASE_KEYSTORE_PATH")
-            if (!storePath.isNullOrBlank()) {
-                storeFile = file(storePath)
+        create("personal") {
+            val envPath = System.getenv("RELEASE_KEYSTORE_PATH")
+            if (!envPath.isNullOrBlank()) {
+                storeFile = file(envPath)
                 storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("RELEASE_KEY_ALIAS")
                 keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            } else {
+                storeFile = file("personal-signing.keystore")
+                storePassword = "offlinepdf2026"
+                keyAlias = "offlinepdf"
+                keyPassword = "offlinepdf2026"
             }
         }
     }
@@ -43,6 +48,7 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("personal")
         }
         release {
             isMinifyEnabled = true
@@ -51,9 +57,7 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            if (!System.getenv("RELEASE_KEYSTORE_PATH").isNullOrBlank()) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            signingConfig = signingConfigs.getByName("personal")
         }
     }
 
