@@ -29,11 +29,6 @@ class OpenCvDocumentProcessor @Inject constructor(
     @DefaultDispatcher private val defaultDispatcher: CoroutineDispatcher
 ) {
 
-    /**
-     * Reads the EXIF orientation tag written by Android cameras (e.g. OnePlus rear camera
-     * stores portrait captures rotated 90° in landscape) and physically bakes the upright
-     * orientation into the JPEG so the document is always upright portrait and never stretched.
-     */
     suspend fun normalizeExifOrientation(filePath: String, maxSide: Int = 2800): Boolean =
         withContext(defaultDispatcher) {
             runCatching {
@@ -50,14 +45,8 @@ class OpenCvDocumentProcessor @Inject constructor(
                     ExifInterface.ORIENTATION_ROTATE_270 -> matrix.postRotate(270f)
                     ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> matrix.postScale(-1f, 1f)
                     ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
-                    ExifInterface.ORIENTATION_TRANSPOSE -> {
-                        matrix.postRotate(90f)
-                        matrix.postScale(-1f, 1f)
-                    }
-                    ExifInterface.ORIENTATION_TRANSVERSE -> {
-                        matrix.postRotate(270f)
-                        matrix.postScale(-1f, 1f)
-                    }
+                    ExifInterface.ORIENTATION_TRANSPOSE -> { matrix.postRotate(90f); matrix.postScale(-1f, 1f) }
+                    ExifInterface.ORIENTATION_TRANSVERSE -> { matrix.postRotate(270f); matrix.postScale(-1f, 1f) }
                     else -> needsTransform = false
                 }
                 if (!needsTransform) return@runCatching true
@@ -74,15 +63,11 @@ class OpenCvDocumentProcessor @Inject constructor(
             }.getOrDefault(false)
         }
 
-    /**
-     * Physically rotates a disk-backed image 90 degrees clockwise so the Crop screen
-     * updates upright immediately without any aspect-ratio distortion.
-     */
-    suspend fun rotateFile90Clockwise(filePath: String, maxSide: Int = 2800): Boolean =
+    suspend fun rotateFile90(filePath: String, clockwise: Boolean = true, maxSide: Int = 2800): Boolean =
         withContext(defaultDispatcher) {
             runCatching {
                 val src = decodeDownsampledBitmap(filePath, maxSide = maxSide) ?: return@runCatching false
-                val matrix = Matrix().apply { postRotate(90f) }
+                val matrix = Matrix().apply { postRotate(if (clockwise) 90f else -90f) }
                 val rotated = Bitmap.createBitmap(src, 0, 0, src.width, src.height, matrix, true)
                 try {
                     saveBitmapAsJpeg(rotated, File(filePath), quality = 95)
@@ -93,6 +78,9 @@ class OpenCvDocumentProcessor @Inject constructor(
                 }
             }.getOrDefault(false)
         }
+
+    suspend fun rotateFile90Clockwise(filePath: String, maxSide: Int = 2800): Boolean =
+        rotateFile90(filePath, clockwise = true, maxSide = maxSide)
 
     suspend fun warpAndRotate(
         rawFilePath: String,
@@ -129,7 +117,7 @@ class OpenCvDocumentProcessor @Inject constructor(
 
             val heightLeft = hypot(bl.x - tl.x, bl.y - tl.y)
             val heightRight = hypot(br.x - tr.x, br.y - tr.y)
-            val maxH = max(heightLeft, heightRight).roundToInt().coerceIn(320, (maxSide * 1.4).toInt())
+            val maxH = max(heightLeft, heightRight).roundToInt().coerceIn(320, (maxSide * 1.45).toInt())
 
             srcPts = MatOfPoint2f(tl, tr, br, bl)
             dstPts = MatOfPoint2f(
@@ -156,12 +144,8 @@ class OpenCvDocumentProcessor @Inject constructor(
                 val fineOut = Mat()
                 try {
                     Imgproc.warpAffine(
-                        rotated,
-                        fineOut,
-                        rotMat,
-                        rotated.size(),
-                        Imgproc.INTER_LINEAR,
-                        Core.BORDER_CONSTANT,
+                        rotated, fineOut, rotMat, rotated.size(),
+                        Imgproc.INTER_LINEAR, Core.BORDER_CONSTANT,
                         Scalar(255.0, 255.0, 255.0, 255.0)
                     )
                     rotated.release()
@@ -186,6 +170,10 @@ class OpenCvDocumentProcessor @Inject constructor(
         }
     }
 
+    /**
+     * Always reprocesses non-destructively from the warped original image.
+     * Supports all 10 distinct filters + filter strength blending + Brightness/Contrast/Sharpness.
+     */
     suspend fun enhanceDocument(
         sourceFilePath: String,
         outputFile: File,
@@ -194,7 +182,8 @@ class OpenCvDocumentProcessor @Inject constructor(
         qualityMode: ScanQualityMode = ScanQualityMode.FAST
     ): Boolean = withContext(defaultDispatcher) {
         if (!OpenCvInitializer.ensureInitialized()) return@withContext false
-        if (mode == ScanFilterMode.ORIGINAL_COLOR) {
+        val hasManualTweaks = abs(custom.brightness) > 0.5f || abs(custom.contrast - 1f) > 0.02f || custom.sharpness > 0.05f
+        if (mode == ScanFilterMode.ORIGINAL && !hasManualTweaks) {
             File(sourceFilePath).copyTo(outputFile, overwrite = true)
             return@withContext true
         }
@@ -203,28 +192,51 @@ class OpenCvDocumentProcessor @Inject constructor(
             ?: return@withContext false
         val rgba = Mat()
         val rgb = Mat()
-        var resultRgb = Mat()
+        var filtered = Mat()
+        var blended = Mat()
+        var finalRgb = Mat()
 
         try {
             Utils.bitmapToMat(bitmap, rgba)
             Imgproc.cvtColor(rgba, rgb, Imgproc.COLOR_RGBA2RGB)
 
-            resultRgb = when (mode) {
-                ScanFilterMode.ORIGINAL_COLOR -> rgb.clone()
+            filtered = when (mode) {
+                ScanFilterMode.ORIGINAL -> rgb.clone()
                 ScanFilterMode.AUTO_COLOR -> applyAutoColor(rgb)
-                ScanFilterMode.DOCUMENT_COLOR -> applyDocumentColor(rgb)
-                ScanFilterMode.ENHANCED_COLOR -> applyEnhancedColor(rgb)
+                ScanFilterMode.COLOR -> applyNaturalColor(rgb)
+                ScanFilterMode.DOCUMENT -> applyDocumentIllumination(rgb)
                 ScanFilterMode.BLACK_AND_WHITE -> applyBlackAndWhite(rgb)
                 ScanFilterMode.GRAYSCALE -> applyGrayscale(rgb)
                 ScanFilterMode.HIGH_CONTRAST -> applyHighContrast(rgb)
-                ScanFilterMode.PHOTO_MODE -> applyPhotoMode(rgb)
-                ScanFilterMode.CLEAN_DOCUMENT -> applyCleanDocument(rgb)
-                ScanFilterMode.CUSTOM -> applyCustom(rgb, custom)
+                ScanFilterMode.ENHANCED_DOCUMENT -> applyEnhancedDocument(rgb)
+                ScanFilterMode.PHOTO -> applyPhotoMode(rgb)
+                ScanFilterMode.SOFT_COLOR -> applySoftColor(rgb)
+            }
+
+            // Blend filtered result with original by filterStrength (0..1)
+            val strength = custom.filterStrength.coerceIn(0f, 1f).toDouble()
+            if (mode != ScanFilterMode.ORIGINAL && strength < 0.99) {
+                Core.addWeighted(filtered, strength, rgb, 1.0 - strength, 0.0, blended)
+            } else {
+                filtered.copyTo(blended)
+            }
+
+            // Apply optional non-destructive Brightness / Contrast / Sharpness tweaks
+            if (hasManualTweaks) {
+                val bc = Mat()
+                try {
+                    blended.convertTo(bc, -1, custom.contrast.toDouble(), custom.brightness.toDouble())
+                    finalRgb = if (custom.sharpness > 0.05f) sharpenMat(bc, custom.sharpness) else bc.clone()
+                } finally {
+                    bc.release()
+                }
+            } else {
+                finalRgb = blended.clone()
             }
 
             val outRgba = Mat()
             try {
-                Imgproc.cvtColor(resultRgb, outRgba, Imgproc.COLOR_RGB2RGBA)
+                Imgproc.cvtColor(finalRgb, outRgba, Imgproc.COLOR_RGB2RGBA)
                 saveMatAsJpeg(outRgba, outputFile, quality = qualityMode.jpegQuality)
             } finally {
                 outRgba.release()
@@ -234,7 +246,9 @@ class OpenCvDocumentProcessor @Inject constructor(
             false
         } finally {
             bitmap.recycle()
-            resultRgb.release()
+            finalRgb.release()
+            blended.release()
+            filtered.release()
             rgb.release()
             rgba.release()
         }
@@ -261,7 +275,28 @@ class OpenCvDocumentProcessor @Inject constructor(
         }
     }
 
-    private fun applyDocumentColor(rgb: Mat): Mat {
+    private fun applyNaturalColor(rgb: Mat): Mat {
+        val auto = applyAutoColor(rgb)
+        val hsv = Mat()
+        val channels = mutableListOf<Mat>()
+        val merged = Mat()
+        val out = Mat()
+        return try {
+            Imgproc.cvtColor(auto, hsv, Imgproc.COLOR_RGB2HSV)
+            Core.split(hsv, channels)
+            channels[1].convertTo(channels[1], -1, 1.24, 0.0)
+            Core.merge(channels, merged)
+            Imgproc.cvtColor(merged, out, Imgproc.COLOR_HSV2RGB)
+            out
+        } finally {
+            auto.release()
+            channels.forEach { it.release() }
+            merged.release()
+            hsv.release()
+        }
+    }
+
+    private fun applyDocumentIllumination(rgb: Mat): Mat {
         val channels = mutableListOf<Mat>()
         val normalized = mutableListOf<Mat>()
         val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(21.0, 21.0))
@@ -291,28 +326,6 @@ class OpenCvDocumentProcessor @Inject constructor(
             normalized.forEach { it.release() }
             kernel.release()
             merged.release()
-        }
-    }
-
-    private fun applyEnhancedColor(rgb: Mat): Mat {
-        val auto = applyAutoColor(rgb)
-        val hsv = Mat()
-        val channels = mutableListOf<Mat>()
-        val merged = Mat()
-        val out = Mat()
-        return try {
-            Imgproc.cvtColor(auto, hsv, Imgproc.COLOR_RGB2HSV)
-            Core.split(hsv, channels)
-            channels[1].convertTo(channels[1], -1, 1.28, 0.0)
-            Core.merge(channels, merged)
-            Imgproc.cvtColor(merged, out, Imgproc.COLOR_HSV2RGB)
-            sharpenMat(out, 0.55f)
-        } finally {
-            auto.release()
-            channels.forEach { it.release() }
-            merged.release()
-            hsv.release()
-            out.release()
         }
     }
 
@@ -355,7 +368,7 @@ class OpenCvDocumentProcessor @Inject constructor(
     }
 
     private fun applyHighContrast(rgb: Mat): Mat {
-        val doc = applyDocumentColor(rgb)
+        val doc = applyDocumentIllumination(rgb)
         val out = Mat()
         return try {
             doc.convertTo(out, -1, 1.38, -28.0)
@@ -365,26 +378,14 @@ class OpenCvDocumentProcessor @Inject constructor(
         }
     }
 
-    private fun applyPhotoMode(rgb: Mat): Mat {
-        val smooth = Mat()
-        return try {
-            Imgproc.bilateralFilter(rgb, smooth, 5, 45.0, 45.0)
-            smooth.convertTo(smooth, -1, 1.06, 4.0)
-            smooth
-        } catch (_: Throwable) {
-            smooth.release()
-            rgb.clone()
-        }
-    }
-
-    private fun applyCleanDocument(rgb: Mat): Mat {
-        val doc = applyDocumentColor(rgb)
+    private fun applyEnhancedDocument(rgb: Mat): Mat {
+        val doc = applyDocumentIllumination(rgb)
         val denoised = Mat()
         val out = Mat()
         return try {
             Imgproc.medianBlur(doc, denoised, 3)
-            denoised.convertTo(out, -1, 1.15, 6.0)
-            sharpenMat(out, 0.45f)
+            denoised.convertTo(out, -1, 1.16, 6.0)
+            sharpenMat(out, 0.5f)
         } finally {
             doc.release()
             denoised.release()
@@ -392,26 +393,26 @@ class OpenCvDocumentProcessor @Inject constructor(
         }
     }
 
-    private fun applyCustom(rgb: Mat, custom: CustomAdjustments): Mat {
-        val adjusted = Mat()
-        val hsv = Mat()
-        val channels = mutableListOf<Mat>()
-        val merged = Mat()
-        val satOut = Mat()
+    private fun applyPhotoMode(rgb: Mat): Mat {
+        val smooth = Mat()
         return try {
-            rgb.convertTo(adjusted, -1, custom.contrast.toDouble(), custom.brightness.toDouble())
-            Imgproc.cvtColor(adjusted, hsv, Imgproc.COLOR_RGB2HSV)
-            Core.split(hsv, channels)
-            channels[1].convertTo(channels[1], -1, custom.saturation.toDouble(), 0.0)
-            Core.merge(channels, merged)
-            Imgproc.cvtColor(merged, satOut, Imgproc.COLOR_HSV2RGB)
-            if (custom.sharpness > 0.05f) sharpenMat(satOut, custom.sharpness) else satOut.clone()
+            Imgproc.bilateralFilter(rgb, smooth, 5, 45.0, 45.0)
+            smooth.convertTo(smooth, -1, 1.05, 4.0)
+            smooth
+        } catch (_: Throwable) {
+            smooth.release()
+            rgb.clone()
+        }
+    }
+
+    private fun applySoftColor(rgb: Mat): Mat {
+        val auto = applyAutoColor(rgb)
+        val out = Mat()
+        return try {
+            Core.addWeighted(auto, 0.45, rgb, 0.55, 6.0, out)
+            out
         } finally {
-            adjusted.release()
-            channels.forEach { it.release() }
-            merged.release()
-            hsv.release()
-            satOut.release()
+            auto.release()
         }
     }
 

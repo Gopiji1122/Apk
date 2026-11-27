@@ -8,6 +8,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.pdf.PdfDocument
+import android.graphics.pdf.PdfRenderer
 import android.net.Uri
 import com.offlinepdf.studio.core.common.IoDispatcher
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -20,6 +21,18 @@ import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
+
+/**
+ * Positioned OCR word in normalized [0..1] page coordinates so Searchable PDF export
+ * places an invisible selectable/searchable text layer directly over the scanned image.
+ */
+data class PositionedOcrWord(
+    val text: String,
+    val leftNorm: Float,
+    val topNorm: Float,
+    val rightNorm: Float,
+    val bottomNorm: Float
+)
 
 sealed interface ScanExportResult {
     data class Success(val exportedPages: Int, val isZipArchive: Boolean = false) : ScanExportResult
@@ -56,16 +69,11 @@ class ScanExportEngine @Inject constructor(
     private val processor: OpenCvDocumentProcessor,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) {
-    /**
-     * Data-safe exporter:
-     * - PDF: Aborts immediately if ANY page is missing or corrupt (never silently omits a page).
-     * - JPEG/PNG with 1 page: Writes that image directly.
-     * - JPEG/PNG with multiple pages: Writes ALL pages into a ZIP archive so zero pages are lost!
-     */
     suspend fun exportPages(
         pages: List<ScannedPageItem>,
         options: ExportOptions,
         destinationUri: Uri,
+        ocrWordsByPageIndex: Map<Int, List<PositionedOcrWord>> = emptyMap(),
         onProgress: (current: Int, total: Int) -> Unit = { _, _ -> }
     ): ScanExportResult = withContext(ioDispatcher) {
         if (pages.isEmpty()) {
@@ -73,7 +81,8 @@ class ScanExportEngine @Inject constructor(
         }
 
         when (options.format) {
-            ExportFormat.PDF -> exportAsPdf(pages, options, destinationUri, onProgress)
+            ExportFormat.PDF, ExportFormat.SEARCHABLE_PDF ->
+                exportAsPdf(pages, options, destinationUri, ocrWordsByPageIndex, onProgress)
             ExportFormat.JPEG -> {
                 if (pages.size == 1) {
                     exportSingleImage(pages.first(), destinationUri, Bitmap.CompressFormat.JPEG, options.jpegQuality)
@@ -138,9 +147,7 @@ class ScanExportEngine @Inject constructor(
                         zos.putNextEntry(ZipEntry(entryName))
                         val ok = bmp.compress(format, quality.coerceIn(40, 100), zos)
                         zos.closeEntry()
-                        if (!ok) {
-                            return ScanExportResult.Failure(pageNum, "Failed to encode Page #$pageNum.")
-                        }
+                        if (!ok) return ScanExportResult.Failure(pageNum, "Failed to encode Page #$pageNum.")
                     } finally {
                         bmp.recycle()
                     }
@@ -156,10 +163,14 @@ class ScanExportEngine @Inject constructor(
         pages: List<ScannedPageItem>,
         options: ExportOptions,
         destinationUri: Uri,
+        ocrWordsByPageIndex: Map<Int, List<PositionedOcrWord>>,
         onProgress: (Int, Int) -> Unit
     ): ScanExportResult {
         val pdfDocument = PdfDocument()
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val imgPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val invisibleTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(1, 0, 0, 0) // Visually transparent but searchable/selectable in PDF readers
+        }
 
         return try {
             pages.forEachIndexed { index, item ->
@@ -195,11 +206,24 @@ class ScanExportEngine @Inject constructor(
                     val left = margin + (availW - drawW) / 2f
                     val top = margin + (availH - drawH) / 2f
 
+                    // Draw invisible positioned OCR text layer (if Searchable PDF)
+                    val words = ocrWordsByPageIndex[index].orEmpty()
+                    if (words.isNotEmpty()) {
+                        for (w in words) {
+                            val boxH = ((w.bottomNorm - w.topNorm) * drawH).coerceIn(6f, 48f)
+                            invisibleTextPaint.textSize = boxH * 0.85f
+                            val x = left + w.leftNorm * drawW
+                            val y = top + w.bottomNorm * drawH
+                            canvas.drawText(w.text, x, y, invisibleTextPaint)
+                        }
+                    }
+
+                    // Draw scanned page visual image on top
                     canvas.drawBitmap(
                         compressedBmp,
                         null,
                         RectF(left, top, left + drawW, top + drawH),
-                        paint
+                        imgPaint
                     )
                     pdfDocument.finishPage(page)
                 } finally {
@@ -207,15 +231,41 @@ class ScanExportEngine @Inject constructor(
                 }
             }
 
-            context.contentResolver.openOutputStream(destinationUri)?.use { out ->
+            val wrote = context.contentResolver.openOutputStream(destinationUri)?.use { out ->
                 pdfDocument.writeTo(out)
-                ScanExportResult.Success(pages.size, isZipArchive = false)
-            } ?: ScanExportResult.Failure(null, "Unable to open output stream for PDF.")
+                out.flush()
+                true
+            } ?: false
+
+            if (!wrote) {
+                return ScanExportResult.Failure(null, "Unable to write PDF to destination.")
+            }
+
+            // Section 12 critical verification: verify written PDF is readable and pageCount matches!
+            val verified = verifyExportedPdf(destinationUri, expectedPages = pages.size)
+            if (!verified) {
+                return ScanExportResult.Failure(
+                    null,
+                    "Export verification failed (page count mismatch or unreadable PDF). All originals preserved."
+                )
+            }
+
+            ScanExportResult.Success(pages.size, isZipArchive = false)
         } catch (t: Throwable) {
             ScanExportResult.Failure(null, t.localizedMessage ?: "PDF export failed. Originals preserved.")
         } finally {
             pdfDocument.close()
         }
+    }
+
+    private fun verifyExportedPdf(uri: Uri, expectedPages: Int): Boolean {
+        return runCatching {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                PdfRenderer(pfd).use { renderer ->
+                    renderer.pageCount == expectedPages
+                }
+            } ?: false
+        }.getOrDefault(false)
     }
 
     private fun recompressIfNeeded(source: Bitmap, quality: Int): Bitmap {

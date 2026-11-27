@@ -81,6 +81,26 @@ fun StudioNavHost(
     val startDestination = if (isExternalLaunch) EXTERNAL_READER_ROUTE else TopDestination.HOME.route
     val showBottomBar = !isExternalLaunch && TopDestination.entries.any { it.route == currentRoute }
 
+    fun navigateToTopTab(route: String) {
+        if (currentRoute == route) return
+        if (route == TopDestination.HOME.route) {
+            val popped = navController.popBackStack(TopDestination.HOME.route, inclusive = false)
+            if (!popped) {
+                navController.navigate(TopDestination.HOME.route) {
+                    launchSingleTop = true
+                }
+            }
+        } else {
+            navController.navigate(route) {
+                popUpTo(TopDestination.HOME.route) {
+                    saveState = true
+                }
+                launchSingleTop = true
+                restoreState = true
+            }
+        }
+    }
+
     fun openReaderInApp(uriString: String) {
         navController.navigate("reader/${encodeUriB64(uriString)}")
     }
@@ -96,15 +116,7 @@ fun StudioNavHost(
                     TopDestination.entries.forEach { dest ->
                         NavigationBarItem(
                             selected = currentRoute == dest.route,
-                            onClick = {
-                                navController.navigate(dest.route) {
-                                    popUpTo(navController.graph.findStartDestination().id) {
-                                        saveState = true
-                                    }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
+                            onClick = { navigateToTopTab(dest.route) },
                             icon = { Icon(dest.icon, contentDescription = stringResource(dest.labelRes)) },
                             label = { Text(stringResource(dest.labelRes)) }
                         )
@@ -131,9 +143,9 @@ fun StudioNavHost(
             composable(TopDestination.HOME.route) {
                 HomeScreen(
                     onOpenDocument = ::openReaderInApp,
-                    onNavigateToFiles = { navController.navigate(TopDestination.FILES.route) },
-                    onNavigateToScanner = { navController.navigate(TopDestination.SCAN.route) },
-                    onNavigateToTools = { navController.navigate(TopDestination.TOOLS.route) }
+                    onNavigateToFiles = { navigateToTopTab(TopDestination.FILES.route) },
+                    onNavigateToScanner = { navigateToTopTab(TopDestination.SCAN.route) },
+                    onNavigateToTools = { navigateToTopTab(TopDestination.TOOLS.route) }
                 )
             }
             composable(TopDestination.FILES.route) {
