@@ -2,7 +2,6 @@ package com.offlinepdf.studio.feature.scanner
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import androidx.core.content.FileProvider
@@ -54,12 +53,12 @@ enum class ScannerStage {
     REVIEW
 }
 
-enum class CapturePresetMode(val label: String) {
-    WHITEBOARD("Whiteboard"),
-    BOOK("Book"),
-    DOCUMENT("Document"),
-    ID_CARD("ID card"),
-    BUSINESS_CARD("Business card")
+enum class CapturePresetMode(val label: String, val guideText: String) {
+    WHITEBOARD("Whiteboard", "Frame whiteboard — glare & uneven lighting auto-corrected"),
+    BOOK("Book", "Align book spine with center dashed line — splits into 2 pages"),
+    DOCUMENT("Document", "Hold steady over document — auto-whitening preserves colored ink"),
+    ID_CARD("ID card", "Step 1/2: Place Front of ID inside frame"),
+    BUSINESS_CARD("Business card", "Center business card inside frame")
 }
 
 enum class ReviewTool {
@@ -84,6 +83,8 @@ data class ScannerUiState(
     val pages: List<ScannedPageItem> = emptyList(),
     val activePageIndex: Int = 0,
     val documentTitle: String = "",
+    val hasUnsavedChanges: Boolean = false,
+    val showDiscardDialog: Boolean = false,
     // Live camera state
     val capturePreset: CapturePresetMode = CapturePresetMode.DOCUMENT,
     val batchMode: Boolean = true,
@@ -103,21 +104,25 @@ data class ScannerUiState(
     val filmstripExpanded: Boolean = false,
     val activeTool: ReviewTool = ReviewTool.NONE,
     val pendingCropQuad: DocumentQuad = DocumentQuad.fullFrame(),
+    val cropDirty: Boolean = false,
     val pendingFineRotation: Float = 0f,
+    val liveAdjustBrightness: Float = 0f,
+    val liveAdjustContrast: Float = 1.0f,
     val compareOriginal: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
-    // Cleanup tool state (Surrounding Color + Custom Color)
+    // Live Cleanup state (Surrounding Color OpenCV Inpaint + Custom Color + Eyedropper)
     val cleanupMode: CleanupBrushMode = CleanupBrushMode.SURROUNDING_COLOR,
     val cleanupCustomColorArgb: Int = Color.WHITE,
     val cleanupBrushRadiusNorm: Float = 0.032f,
-    val pendingCleanupStrokes: List<CleanupStroke> = emptyList(),
-    // Markup tool state
+    val cleanupEyedropperActive: Boolean = false,
+    val cleanupUndoCount: Int = 0,
+    // Markup state
     val markupColorArgb: Int = Color.parseColor("#E53935"),
     val markupIsHighlighter: Boolean = false,
     val markupStrokeWidthNorm: Float = 0.008f,
     val pendingMarkupStrokes: List<MarkupStroke> = emptyList(),
-    // Settings & Export state
+    // Sheets & dialogs
     val showSettingsSheet: Boolean = false,
     val showExportSheet: Boolean = false,
     val showRenameDialog: Boolean = false,
@@ -153,6 +158,7 @@ class ScannerViewModel @Inject constructor(
 
     private val undoMap = mutableMapOf<String, MutableList<PageEditSnapshot>>()
     private val redoMap = mutableMapOf<String, MutableList<PageEditSnapshot>>()
+    private val cleanupUndoFiles = mutableMapOf<String, MutableList<File>>()
 
     private val defaultTitle: String
         get() = "Scan " + SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date())
@@ -178,7 +184,6 @@ class ScannerViewModel @Inject constructor(
                     )
                 )
             }
-            // Restore any unfinished persistent session silently so pages are never lost
             val savedPages = withContext(ioDispatcher) { scanSessionDao.getAllOrdered() }
                 .mapNotNull { entity ->
                     if (!File(entity.rawImagePath).exists()) return@mapNotNull null
@@ -205,7 +210,13 @@ class ScannerViewModel @Inject constructor(
                     )
                 }
             if (savedPages.isNotEmpty()) {
-                _uiState.update { it.copy(pages = savedPages, activePageIndex = savedPages.lastIndex) }
+                _uiState.update {
+                    it.copy(
+                        pages = savedPages,
+                        activePageIndex = savedPages.lastIndex,
+                        hasUnsavedChanges = true
+                    )
+                }
             }
         }
     }
@@ -237,19 +248,74 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
+    // ---- Discard Warning & Clean Exit ----
+    fun requestExitScanner(onNavigateHome: () -> Unit) {
+        val s = _uiState.value
+        if (s.pages.isNotEmpty() && s.hasUnsavedChanges) {
+            _uiState.update { it.copy(showDiscardDialog = true) }
+        } else {
+            onNavigateHome()
+        }
+    }
+
+    fun dismissDiscardDialog() {
+        _uiState.update { it.copy(showDiscardDialog = false) }
+    }
+
+    fun confirmDiscardAndExit(onNavigateHome: () -> Unit) {
+        viewModelScope.launch {
+            withContext(ioDispatcher) {
+                scanSessionDao.clearAll()
+                runCatching { sessionDir.listFiles()?.forEach { it.delete() } }
+            }
+            undoMap.clear()
+            redoMap.clear()
+            cleanupUndoFiles.clear()
+            _uiState.update {
+                ScannerUiState(
+                    documentTitle = defaultTitle,
+                    autoCaptureEnabled = it.autoCaptureEnabled,
+                    batchMode = it.batchMode,
+                    qualityMode = it.qualityMode,
+                    captureSoundEnabled = it.captureSoundEnabled,
+                    detectionSensitivity = it.detectionSensitivity
+                )
+            }
+            onNavigateHome()
+        }
+    }
+
     // ---- Camera Controls ----
     fun selectCapturePreset(preset: CapturePresetMode) {
-        _uiState.update { it.copy(capturePreset = preset, idCardFrontPendingPath = null) }
+        _uiState.update {
+            it.copy(
+                capturePreset = preset,
+                idCardFrontPendingPath = null,
+                statusMessage = preset.guideText
+            )
+        }
     }
 
     fun setBatchMode(batch: Boolean) {
-        _uiState.update { it.copy(batchMode = batch) }
+        _uiState.update {
+            it.copy(
+                batchMode = batch,
+                statusMessage = if (batch) "Batch mode: scan multiple pages continuously" else "Single mode: edit after each page"
+            )
+        }
         viewModelScope.launch { prefsRepository.setScannerBatchMode(batch) }
     }
 
     fun toggleAutoCapture() {
         val next = !_uiState.value.autoCaptureEnabled
-        _uiState.update { it.copy(autoCaptureEnabled = next, autoCaptureProgress = 0f) }
+        _uiState.update {
+            it.copy(
+                autoCaptureEnabled = next,
+                autoCaptureProgress = 0f,
+                liveDetectedQuad = if (next) it.liveDetectedQuad else null,
+                statusMessage = if (next) "Auto-capture ON" else "Manual capture — tap shutter"
+            )
+        }
         viewModelScope.launch { prefsRepository.setScannerAutoCapture(next) }
     }
 
@@ -262,10 +328,9 @@ class ScannerViewModel @Inject constructor(
         _uiState.update {
             it.copy(
                 qualityMode = next,
-                statusMessage = if (next == ScanQualityMode.HD) "HD Mode: 3200px high-detail capture" else "Fast Mode: instant capture"
+                statusMessage = if (next == ScanQualityMode.HD) "HD Mode: 3200px crisp detail" else "Fast Mode: instant capture"
             )
         }
-        
     }
 
     fun toggleCaptureSound(enabled: Boolean) {
@@ -285,9 +350,9 @@ class ScannerViewModel @Inject constructor(
     fun updateLiveDetection(quad: DocumentQuad?, confidence: Float, progress: Float, hint: String?) {
         _uiState.update {
             it.copy(
-                liveDetectedQuad = quad,
+                liveDetectedQuad = if (it.autoCaptureEnabled) quad else null,
                 liveConfidence = confidence,
-                autoCaptureProgress = progress,
+                autoCaptureProgress = if (it.autoCaptureEnabled) progress else 0f,
                 cameraQualityHint = hint
             )
         }
@@ -309,7 +374,10 @@ class ScannerViewModel @Inject constructor(
                 activePageIndex = idx,
                 activeTool = ReviewTool.NONE,
                 pendingCropQuad = page.quad,
+                cropDirty = false,
                 pendingFineRotation = page.fineRotationDegrees,
+                liveAdjustBrightness = page.customAdjustments.brightness,
+                liveAdjustContrast = page.customAdjustments.contrast,
                 compareOriginal = false
             )
         }
@@ -317,14 +385,16 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun openCameraToAddPage() {
-        _uiState.update {
-            it.copy(
-                stage = ScannerStage.CAMERA,
-                activeTool = ReviewTool.NONE,
-                retakingPageId = null,
-                liveDetectedQuad = null,
-                autoCaptureProgress = 0f
-            )
+        commitPendingCropIfNeeded {
+            _uiState.update {
+                it.copy(
+                    stage = ScannerStage.CAMERA,
+                    activeTool = ReviewTool.NONE,
+                    retakingPageId = null,
+                    liveDetectedQuad = null,
+                    autoCaptureProgress = 0f
+                )
+            }
         }
     }
 
@@ -344,10 +414,7 @@ class ScannerViewModel @Inject constructor(
 
     private fun defaultFilterForPreset(preset: CapturePresetMode): ScanFilterMode = when (preset) {
         CapturePresetMode.WHITEBOARD -> ScanFilterMode.ENHANCED_DOCUMENT
-        CapturePresetMode.BOOK -> ScanFilterMode.AUTO_COLOR
-        CapturePresetMode.DOCUMENT -> ScanFilterMode.AUTO_COLOR
-        CapturePresetMode.ID_CARD -> ScanFilterMode.AUTO_COLOR
-        CapturePresetMode.BUSINESS_CARD -> ScanFilterMode.AUTO_COLOR
+        else -> ScanFilterMode.AUTO_COLOR
     }
 
     fun onPhotoCaptured(rawFile: File) {
@@ -360,7 +427,7 @@ class ScannerViewModel @Inject constructor(
                 it.copy(
                     isCapturing = false,
                     isProcessing = true,
-                    processingMessage = if (quality == ScanQualityMode.HD) "Processing HD scan..." else "Enhancing page..."
+                    processingMessage = if (quality == ScanQualityMode.HD) "Enhancing HD scan..." else "Enhancing page..."
                 )
             }
 
@@ -368,12 +435,8 @@ class ScannerViewModel @Inject constructor(
                 processor.normalizeExifOrientation(rawFile.absolutePath, maxSide = if (quality == ScanQualityMode.HD) 3200 else 2200)
                 val previewBmp = processor.decodeDownsampledBitmap(rawFile.absolutePath, maxSide = 960)
                 val detectedQuad = previewBmp?.let { bmp ->
-                    try {
-                        edgeDetector.detectDocumentQuad(bmp)
-                    } finally {
-                        bmp.recycle()
-                    }
-                } ?: _uiState.value.liveDetectedQuad ?: DocumentQuad.fullFrame()
+                    try { edgeDetector.detectDocumentQuad(bmp) } finally { bmp.recycle() }
+                } ?: _uiState.value.liveDetectedQuad ?: DocumentQuad.fullFrame(0.02f)
 
                 val pageId = retakingId ?: UUID.randomUUID().toString()
                 val croppedFile = File(sessionDir, "crop_${pageId}.jpg")
@@ -383,7 +446,6 @@ class ScannerViewModel @Inject constructor(
                 processor.warpAndRotate(rawFile.absolutePath, croppedFile, detectedQuad, 0, 0f, quality)
                 processor.enhanceDocument(croppedFile.absolutePath, enhancedFile, filter, CustomAdjustments(), quality)
 
-                // Handle ID Card 2-sided flow
                 if (preset == CapturePresetMode.ID_CARD && retakingId == null) {
                     if (idFrontPending == null) {
                         return@withContext Pair<List<ScannedPageItem>, String?>(emptyList(), enhancedFile.absolutePath)
@@ -396,14 +458,13 @@ class ScannerViewModel @Inject constructor(
                             rawImagePath = combinedFile.absolutePath,
                             warpedImagePath = combinedFile.absolutePath,
                             enhancedImagePath = combinedFile.absolutePath,
-                            quad = DocumentQuad.fullFrame(),
+                            quad = DocumentQuad.fullFrame(0f),
                             filterMode = ScanFilterMode.ORIGINAL
                         )
                         return@withContext Pair(listOf(combinedItem), null)
                     }
                 }
 
-                // Handle Book Mode 2-page spread auto-split
                 if (preset == CapturePresetMode.BOOK && retakingId == null) {
                     val leftId = UUID.randomUUID().toString()
                     val rightId = UUID.randomUUID().toString()
@@ -416,33 +477,36 @@ class ScannerViewModel @Inject constructor(
                         processor.enhanceDocument(rightCrop.absolutePath, rightEnh, filter, CustomAdjustments(), quality)
                         return@withContext Pair(
                             listOf(
-                                ScannedPageItem(leftId, leftCrop.absolutePath, leftCrop.absolutePath, leftEnh.absolutePath, DocumentQuad.fullFrame(), filterMode = filter),
-                                ScannedPageItem(rightId, rightCrop.absolutePath, rightCrop.absolutePath, rightEnh.absolutePath, DocumentQuad.fullFrame(), filterMode = filter)
+                                ScannedPageItem(leftId, leftCrop.absolutePath, leftCrop.absolutePath, leftEnh.absolutePath, DocumentQuad.fullFrame(0f), filterMode = filter),
+                                ScannedPageItem(rightId, rightCrop.absolutePath, rightCrop.absolutePath, rightEnh.absolutePath, DocumentQuad.fullFrame(0f), filterMode = filter)
                             ),
                             null
                         )
                     }
                 }
 
-                val item = ScannedPageItem(
-                    id = pageId,
-                    rawImagePath = rawFile.absolutePath,
-                    warpedImagePath = croppedFile.absolutePath,
-                    enhancedImagePath = enhancedFile.absolutePath,
-                    quad = detectedQuad,
-                    filterMode = filter
+                Pair(
+                    listOf(
+                        ScannedPageItem(
+                            id = pageId,
+                            rawImagePath = rawFile.absolutePath,
+                            warpedImagePath = croppedFile.absolutePath,
+                            enhancedImagePath = enhancedFile.absolutePath,
+                            quad = detectedQuad,
+                            filterMode = filter
+                        )
+                    ),
+                    null
                 )
-                Pair(listOf(item), null)
             }
 
-            // ID Card Front captured -> stay on camera and prompt for Back side
             if (resultPages.second != null) {
                 _uiState.update {
                     it.copy(
                         isProcessing = false,
                         processingMessage = null,
                         idCardFrontPendingPath = resultPages.second,
-                        statusMessage = "Front captured — now scan Back of ID card"
+                        statusMessage = "Step 2/2: Flip & scan Back of ID card"
                     )
                 }
                 return@launch
@@ -457,6 +521,7 @@ class ScannerViewModel @Inject constructor(
                         pages = replaced,
                         activePageIndex = idx,
                         retakingPageId = null,
+                        hasUnsavedChanges = true,
                         stage = ScannerStage.REVIEW,
                         activeTool = ReviewTool.NONE,
                         isProcessing = false,
@@ -474,9 +539,11 @@ class ScannerViewModel @Inject constructor(
                         pages = updated,
                         activePageIndex = updated.lastIndex,
                         idCardFrontPendingPath = null,
+                        hasUnsavedChanges = true,
                         stage = if (goDirectToReview) ScannerStage.REVIEW else ScannerStage.CAMERA,
                         activeTool = ReviewTool.NONE,
                         pendingCropQuad = updated.last().quad,
+                        cropDirty = false,
                         isProcessing = false,
                         processingMessage = null,
                         previewRevision = it.previewRevision + 1,
@@ -507,7 +574,7 @@ class ScannerViewModel @Inject constructor(
                     if (!copied) continue
                     processor.normalizeExifOrientation(raw.absolutePath)
                     val previewBmp = processor.decodeDownsampledBitmap(raw.absolutePath, maxSide = 960)
-                    val quad = previewBmp?.let { b -> try { edgeDetector.detectDocumentQuad(b) } finally { b.recycle() } } ?: DocumentQuad.fullFrame()
+                    val quad = previewBmp?.let { b -> try { edgeDetector.detectDocumentQuad(b) } finally { b.recycle() } } ?: DocumentQuad.fullFrame(0.02f)
                     val id = UUID.randomUUID().toString()
                     val cropFile = File(sessionDir, "crop_${id}.jpg")
                     val enhFile = File(sessionDir, "enh_${id}.jpg")
@@ -531,6 +598,7 @@ class ScannerViewModel @Inject constructor(
                 it.copy(
                     pages = updated,
                     activePageIndex = updated.lastIndex.coerceAtLeast(0),
+                    hasUnsavedChanges = updated.isNotEmpty(),
                     stage = if (updated.isNotEmpty()) ScannerStage.REVIEW else it.stage,
                     isProcessing = false,
                     processingMessage = null,
@@ -542,22 +610,28 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
-    // ---- Review & Navigation ----
+    // ---- Inline Multi-Page Navigation (auto-saves pending Crop when sliding pages!) ----
     fun selectPage(index: Int) {
         val pages = _uiState.value.pages
-        if (index !in pages.indices) return
-        val p = pages[index]
-        _uiState.update {
-            it.copy(
-                activePageIndex = index,
-                pendingCropQuad = p.quad,
-                pendingFineRotation = p.fineRotationDegrees,
-                pendingCleanupStrokes = emptyList(),
-                pendingMarkupStrokes = emptyList(),
-                compareOriginal = false
-            )
+        if (index !in pages.indices || index == _uiState.value.activePageIndex) return
+        commitPendingCropIfNeeded {
+            val target = _uiState.value.pages.getOrNull(index) ?: return@commitPendingCropIfNeeded
+            _uiState.update {
+                it.copy(
+                    activePageIndex = index,
+                    pendingCropQuad = target.quad,
+                    cropDirty = false,
+                    pendingFineRotation = target.fineRotationDegrees,
+                    liveAdjustBrightness = target.customAdjustments.brightness,
+                    liveAdjustContrast = target.customAdjustments.contrast,
+                    pendingMarkupStrokes = emptyList(),
+                    cleanupEyedropperActive = false,
+                    cleanupUndoCount = cleanupUndoFiles[target.id]?.size ?: 0,
+                    compareOriginal = false
+                )
+            }
+            refreshUndoRedoFlags()
         }
-        refreshUndoRedoFlags()
     }
 
     fun previousPage() = selectPage((_uiState.value.activePageIndex - 1).coerceAtLeast(0))
@@ -577,23 +651,60 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun selectReviewTool(tool: ReviewTool) {
+        // If leaving CROP tool, auto-apply any pending corner changes seamlessly!
+        if (_uiState.value.activeTool == ReviewTool.CROP && tool != ReviewTool.CROP) {
+            commitPendingCropIfNeeded {
+                switchToolState(tool)
+            }
+        } else {
+            switchToolState(tool)
+        }
+    }
+
+    private fun switchToolState(tool: ReviewTool) {
         val page = _uiState.value.activePage
         val next = if (_uiState.value.activeTool == tool) ReviewTool.NONE else tool
         _uiState.update {
             it.copy(
                 activeTool = next,
                 pendingCropQuad = page?.quad ?: DocumentQuad.fullFrame(),
+                cropDirty = false,
                 pendingFineRotation = page?.fineRotationDegrees ?: 0f,
-                pendingCleanupStrokes = emptyList(),
+                liveAdjustBrightness = page?.customAdjustments?.brightness ?: 0f,
+                liveAdjustContrast = page?.customAdjustments?.contrast ?: 1f,
                 pendingMarkupStrokes = emptyList(),
+                cleanupEyedropperActive = false,
+                cleanupUndoCount = page?.let { p -> cleanupUndoFiles[p.id]?.size ?: 0 } ?: 0,
                 compareOriginal = false
             )
         }
     }
 
-    // ---- Crop & Rotate ----
+    private fun commitPendingCropIfNeeded(onDone: () -> Unit) {
+        val s = _uiState.value
+        val page = s.activePage
+        if (s.activeTool != ReviewTool.CROP || !s.cropDirty || page == null) {
+            onDone()
+            return
+        }
+        val quad = s.pendingCropQuad
+        val quality = s.qualityMode
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessing = true, processingMessage = "Saving crop...") }
+            val updated = withContext(defaultDispatcher) {
+                processor.warpAndRotate(page.rawImagePath, File(page.warpedImagePath), quad, page.rotationDegrees, page.fineRotationDegrees, quality)
+                processor.enhanceDocument(page.warpedImagePath, File(page.enhancedImagePath), page.filterMode, page.customAdjustments, quality)
+                page.copy(quad = quad)
+            }
+            replaceActivePage(updated, closeTool = false)
+            _uiState.update { it.copy(cropDirty = false) }
+            onDone()
+        }
+    }
+
+    // ---- Crop & Live Rotate ----
     fun updatePendingCropQuad(quad: DocumentQuad) {
-        _uiState.update { it.copy(pendingCropQuad = quad) }
+        _uiState.update { it.copy(pendingCropQuad = quad, cropDirty = true, hasUnsavedChanges = true) }
     }
 
     fun autoDetectActivePageCrop() {
@@ -604,52 +715,41 @@ class ScannerViewModel @Inject constructor(
                 try { edgeDetector.detectDocumentQuad(bmp) } finally { bmp.recycle() }
             }
             if (detected != null) {
-                _uiState.update { it.copy(pendingCropQuad = detected, statusMessage = "Corners detected") }
+                _uiState.update { it.copy(pendingCropQuad = detected, cropDirty = true, statusMessage = "Corners detected") }
             } else {
-                _uiState.update { it.copy(pendingCropQuad = DocumentQuad.fullFrame(), statusMessage = "Using full frame") }
+                _uiState.update { it.copy(pendingCropQuad = DocumentQuad.fullFrame(0f), cropDirty = true, statusMessage = "Using full frame") }
             }
         }
     }
 
     fun resetCropToFull() {
-        _uiState.update { it.copy(pendingCropQuad = DocumentQuad.fullFrame()) }
+        _uiState.update { it.copy(pendingCropQuad = DocumentQuad.fullFrame(0f), cropDirty = true) }
     }
 
     fun applyCropAndPerspective() {
-        val page = _uiState.value.activePage ?: return
-        val quad = _uiState.value.pendingCropQuad
-        val quality = _uiState.value.qualityMode
-        viewModelScope.launch {
-            _uiState.update { it.copy(isProcessing = true, processingMessage = "Applying crop...") }
-            val updated = withContext(defaultDispatcher) {
-                val cropFile = File(page.warpedImagePath)
-                val enhFile = File(page.enhancedImagePath)
-                processor.warpAndRotate(page.rawImagePath, cropFile, quad, page.rotationDegrees, page.fineRotationDegrees, quality)
-                processor.enhanceDocument(cropFile.absolutePath, enhFile, page.filterMode, page.customAdjustments, quality)
-                page.copy(quad = quad)
-            }
-            replaceActivePage(updated, closeTool = true)
+        commitPendingCropIfNeeded {
+            _uiState.update { it.copy(activeTool = ReviewTool.NONE) }
         }
     }
 
     fun updatePendingFineRotation(deg: Float) {
-        _uiState.update { it.copy(pendingFineRotation = deg.coerceIn(-45f, 45f)) }
+        _uiState.update { it.copy(pendingFineRotation = deg.coerceIn(-45f, 45f), hasUnsavedChanges = true) }
     }
 
     fun rotateActivePage90(clockwise: Boolean) {
         val page = _uiState.value.activePage ?: return
         val quality = _uiState.value.qualityMode
+        val quadToUse = if (_uiState.value.activeTool == ReviewTool.CROP) _uiState.value.pendingCropQuad else page.quad
         val nextRot = ((page.rotationDegrees + if (clockwise) 90 else -90) % 360 + 360) % 360
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessing = true, processingMessage = "Rotating...") }
             val updated = withContext(defaultDispatcher) {
-                val cropFile = File(page.warpedImagePath)
-                val enhFile = File(page.enhancedImagePath)
-                processor.warpAndRotate(page.rawImagePath, cropFile, page.quad, nextRot, _uiState.value.pendingFineRotation, quality)
-                processor.enhanceDocument(cropFile.absolutePath, enhFile, page.filterMode, page.customAdjustments, quality)
-                page.copy(rotationDegrees = nextRot, fineRotationDegrees = _uiState.value.pendingFineRotation)
+                processor.warpAndRotate(page.rawImagePath, File(page.warpedImagePath), quadToUse, nextRot, _uiState.value.pendingFineRotation, quality)
+                processor.enhanceDocument(page.warpedImagePath, File(page.enhancedImagePath), page.filterMode, page.customAdjustments, quality)
+                page.copy(quad = quadToUse, rotationDegrees = nextRot, fineRotationDegrees = _uiState.value.pendingFineRotation)
             }
             replaceActivePage(updated, closeTool = false)
+            _uiState.update { it.copy(cropDirty = false) }
         }
     }
 
@@ -660,20 +760,16 @@ class ScannerViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessing = true, processingMessage = "Straightening...") }
             val updated = withContext(defaultDispatcher) {
-                val cropFile = File(page.warpedImagePath)
-                val enhFile = File(page.enhancedImagePath)
-                processor.warpAndRotate(page.rawImagePath, cropFile, page.quad, page.rotationDegrees, fine, quality)
-                processor.enhanceDocument(cropFile.absolutePath, enhFile, page.filterMode, page.customAdjustments, quality)
+                processor.warpAndRotate(page.rawImagePath, File(page.warpedImagePath), page.quad, page.rotationDegrees, fine, quality)
+                processor.enhanceDocument(page.warpedImagePath, File(page.enhancedImagePath), page.filterMode, page.customAdjustments, quality)
                 page.copy(fineRotationDegrees = fine)
             }
             replaceActivePage(updated, closeTool = true)
         }
     }
 
-    // ---- Filters & Adjustments ----
-    fun quickAutoCleanActivePage() {
-        applyFilterToActivePage(ScanFilterMode.AUTO_COLOR)
-    }
+    // ---- Filters & Live Adjust ----
+    fun quickAutoCleanActivePage() = applyFilterToActivePage(ScanFilterMode.AUTO_COLOR)
 
     fun applyFilterToActivePage(mode: ScanFilterMode) {
         val page = _uiState.value.activePage ?: return
@@ -696,6 +792,7 @@ class ScannerViewModel @Inject constructor(
             _uiState.update {
                 it.copy(
                     pages = updated,
+                    hasUnsavedChanges = true,
                     isProcessing = false,
                     processingMessage = null,
                     previewRevision = it.previewRevision + 1,
@@ -706,9 +803,14 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
+    fun setLiveAdjustPreview(brightness: Float, contrast: Float) {
+        _uiState.update { it.copy(liveAdjustBrightness = brightness, liveAdjustContrast = contrast) }
+    }
+
     fun updateCustomAdjustments(adjustments: CustomAdjustments) {
         val page = _uiState.value.activePage ?: return
         pushUndo(page)
+        _uiState.update { it.copy(liveAdjustBrightness = adjustments.brightness, liveAdjustContrast = adjustments.contrast) }
         reprocessEnhancement(page.copy(customAdjustments = adjustments))
     }
 
@@ -719,6 +821,7 @@ class ScannerViewModel @Inject constructor(
     fun resetActivePageEdits() {
         val page = _uiState.value.activePage ?: return
         pushUndo(page)
+        _uiState.update { it.copy(liveAdjustBrightness = 0f, liveAdjustContrast = 1f) }
         reprocessEnhancement(page.copy(filterMode = ScanFilterMode.AUTO_COLOR, customAdjustments = CustomAdjustments()))
     }
 
@@ -774,20 +877,55 @@ class ScannerViewModel @Inject constructor(
         }
     }
 
-    // ---- Cleanup Tool (Surrounding Color Inpaint + Custom Color) ----
+    // ---- LIVE Cleanup (Immediate per-stroke OpenCV Inpaint or Custom Color + Eyedropper!) ----
     fun setCleanupMode(mode: CleanupBrushMode) {
-        _uiState.update { it.copy(cleanupMode = mode) }
+        _uiState.update { it.copy(cleanupMode = mode, cleanupEyedropperActive = false) }
     }
 
     fun setCleanupCustomColor(argb: Int) {
-        _uiState.update { it.copy(cleanupCustomColorArgb = argb, cleanupMode = CleanupBrushMode.CUSTOM_COLOR) }
+        _uiState.update {
+            it.copy(
+                cleanupCustomColorArgb = argb,
+                cleanupMode = CleanupBrushMode.CUSTOM_COLOR,
+                cleanupEyedropperActive = false
+            )
+        }
+    }
+
+    fun toggleCleanupEyedropper() {
+        _uiState.update {
+            val next = !it.cleanupEyedropperActive
+            it.copy(
+                cleanupEyedropperActive = next,
+                cleanupMode = CleanupBrushMode.CUSTOM_COLOR,
+                statusMessage = if (next) "Tap anywhere on the page to pick its color" else null
+            )
+        }
+    }
+
+    fun sampleCleanupColorFromPage(normX: Float, normY: Float) {
+        val page = _uiState.value.activePage ?: return
+        viewModelScope.launch {
+            val sampled = withContext(ioDispatcher) {
+                processor.sampleColorAt(page.enhancedImagePath, normX, normY)
+            }
+            _uiState.update {
+                it.copy(
+                    cleanupCustomColorArgb = sampled,
+                    cleanupMode = CleanupBrushMode.CUSTOM_COLOR,
+                    cleanupEyedropperActive = false,
+                    statusMessage = "Color picked from page"
+                )
+            }
+        }
     }
 
     fun setCleanupBrushRadius(radiusNorm: Float) {
         _uiState.update { it.copy(cleanupBrushRadiusNorm = radiusNorm.coerceIn(0.014f, 0.085f)) }
     }
 
-    fun addCleanupStroke(points: List<NormalizedPoint>) {
+    fun applySingleCleanupStrokeLive(points: List<NormalizedPoint>) {
+        val page = _uiState.value.activePage ?: return
         if (points.isEmpty()) return
         val s = _uiState.value
         val stroke = CleanupStroke(
@@ -796,41 +934,76 @@ class ScannerViewModel @Inject constructor(
             mode = s.cleanupMode,
             customColorArgb = s.cleanupCustomColorArgb
         )
-        _uiState.update { it.copy(pendingCleanupStrokes = it.pendingCleanupStrokes + stroke) }
-    }
-
-    fun undoCleanupStroke() {
-        _uiState.update {
-            if (it.pendingCleanupStrokes.isEmpty()) it
-            else it.copy(pendingCleanupStrokes = it.pendingCleanupStrokes.dropLast(1))
-        }
-    }
-
-    fun clearCleanupStrokes() {
-        _uiState.update { it.copy(pendingCleanupStrokes = emptyList()) }
-    }
-
-    fun applyCleanupStrokes() {
-        val page = _uiState.value.activePage ?: return
-        val strokes = _uiState.value.pendingCleanupStrokes
-        if (strokes.isEmpty()) {
-            _uiState.update { it.copy(activeTool = ReviewTool.NONE) }
-            return
-        }
-        val quality = _uiState.value.qualityMode
         viewModelScope.launch {
-            _uiState.update { it.copy(isProcessing = true, processingMessage = "Cleaning up marks...") }
             val ok = withContext(defaultDispatcher) {
-                processor.applyCleanupStrokes(page.enhancedImagePath, File(page.enhancedImagePath), strokes, quality)
+                val srcFile = File(page.enhancedImagePath)
+                val backup = File(sessionDir, "cleanup_bak_${page.id}_${System.currentTimeMillis()}.jpg")
+                runCatching { srcFile.copyTo(backup, overwrite = true) }
+                cleanupUndoFiles.getOrPut(page.id) { mutableListOf() }.add(backup)
+                processor.applyCleanupStrokes(page.enhancedImagePath, srcFile, listOf(stroke), s.qualityMode)
+            }
+            if (ok) {
+                _uiState.update {
+                    it.copy(
+                        hasUnsavedChanges = true,
+                        cleanupUndoCount = cleanupUndoFiles[page.id]?.size ?: 0,
+                        previewRevision = it.previewRevision + 1
+                    )
+                }
+            }
+        }
+    }
+
+    fun undoLiveCleanup() {
+        val page = _uiState.value.activePage ?: return
+        val stack = cleanupUndoFiles[page.id] ?: return
+        if (stack.isEmpty()) return
+        val lastBak = stack.removeAt(stack.lastIndex)
+        viewModelScope.launch {
+            withContext(ioDispatcher) {
+                if (lastBak.exists()) {
+                    lastBak.copyTo(File(page.enhancedImagePath), overwrite = true)
+                    lastBak.delete()
+                }
             }
             _uiState.update {
                 it.copy(
+                    cleanupUndoCount = stack.size,
+                    previewRevision = it.previewRevision + 1
+                )
+            }
+        }
+    }
+
+    // ---- Working Physical Resize ----
+    fun applyResize(pageSize: ExportPageSize, orientation: ExportOrientation, applyToAll: Boolean) {
+        val nextOpts = _uiState.value.exportOptions.copy(pageSize = pageSize, orientation = orientation)
+        _uiState.update { it.copy(exportOptions = nextOpts) }
+        val quality = _uiState.value.qualityMode
+        val targets = if (applyToAll) _uiState.value.pages else listOfNotNull(_uiState.value.activePage)
+        if (targets.isEmpty()) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isProcessing = true, processingMessage = "Resizing to ${pageSize.displayName}...") }
+            withContext(defaultDispatcher) {
+                for (p in targets) {
+                    if (pageSize == ExportPageSize.ORIGINAL) {
+                        // Restore cleanly from warped + filter
+                        processor.enhanceDocument(p.warpedImagePath, File(p.enhancedImagePath), p.filterMode, p.customAdjustments, quality)
+                    } else {
+                        val tempEnh = File(sessionDir, "enh_pre_resize_${p.id}.jpg")
+                        processor.enhanceDocument(p.warpedImagePath, tempEnh, p.filterMode, p.customAdjustments, quality)
+                        processor.resizePageToAspect(tempEnh.absolutePath, File(p.enhancedImagePath), pageSize, orientation, quality)
+                        tempEnh.delete()
+                    }
+                }
+            }
+            _uiState.update {
+                it.copy(
+                    hasUnsavedChanges = true,
                     isProcessing = false,
                     processingMessage = null,
-                    pendingCleanupStrokes = emptyList(),
-                    activeTool = ReviewTool.NONE,
                     previewRevision = it.previewRevision + 1,
-                    statusMessage = if (ok) "Cleanup applied" else "Cleanup failed"
+                    statusMessage = "Resized to ${pageSize.displayName} (${orientation.displayName})"
                 )
             }
         }
@@ -884,6 +1057,7 @@ class ScannerViewModel @Inject constructor(
             }
             _uiState.update {
                 it.copy(
+                    hasUnsavedChanges = true,
                     isProcessing = false,
                     processingMessage = null,
                     pendingMarkupStrokes = emptyList(),
@@ -901,7 +1075,7 @@ class ScannerViewModel @Inject constructor(
         if (fromIndex !in list.indices || toIndex !in list.indices || fromIndex == toIndex) return
         val item = list.removeAt(fromIndex)
         list.add(toIndex, item)
-        _uiState.update { it.copy(pages = list, activePageIndex = toIndex) }
+        _uiState.update { it.copy(pages = list, activePageIndex = toIndex, hasUnsavedChanges = true) }
         persistSession(list)
     }
 
@@ -925,7 +1099,7 @@ class ScannerViewModel @Inject constructor(
             }
             val list = _uiState.value.pages.toMutableList()
             list.add(index + 1, copy)
-            _uiState.update { it.copy(pages = list, activePageIndex = index + 1, statusMessage = "Page duplicated") }
+            _uiState.update { it.copy(pages = list, activePageIndex = index + 1, hasUnsavedChanges = true, statusMessage = "Page duplicated") }
             persistSession(list)
         }
     }
@@ -954,6 +1128,7 @@ class ScannerViewModel @Inject constructor(
             it.copy(
                 pages = list,
                 activePageIndex = nextIdx,
+                hasUnsavedChanges = list.isNotEmpty(),
                 stage = if (list.isEmpty()) ScannerStage.CAMERA else it.stage,
                 activeTool = if (list.isEmpty()) ReviewTool.NONE else it.activeTool
             )
@@ -969,6 +1144,7 @@ class ScannerViewModel @Inject constructor(
         _uiState.update {
             it.copy(
                 pages = list,
+                hasUnsavedChanges = true,
                 isProcessing = false,
                 processingMessage = null,
                 activeTool = if (closeTool) ReviewTool.NONE else it.activeTool,
@@ -1013,7 +1189,7 @@ class ScannerViewModel @Inject constructor(
             if (formatOverride != null) it.copy(format = formatOverride) else it
         }
         viewModelScope.launch {
-            _uiState.update { it.copy(showExportSheet = false, isProcessing = true, processingMessage = "Saving ${options.format.name}...") }
+            _uiState.update { it.copy(showExportSheet = false, isProcessing = true, processingMessage = "Saving ${options.format.displayName}...") }
             val result = withContext(ioDispatcher) {
                 exportEngine.exportPages(
                     pages = pages,
@@ -1037,6 +1213,7 @@ class ScannerViewModel @Inject constructor(
                     }
                     _uiState.update {
                         it.copy(
+                            hasUnsavedChanges = false,
                             isProcessing = false,
                             processingMessage = null,
                             lastExportedPdfUri = if (options.format == ExportFormat.PDF) destinationUri.toString() else null,
@@ -1080,10 +1257,6 @@ class ScannerViewModel @Inject constructor(
             _uiState.update { it.copy(isProcessing = false, processingMessage = null) }
             onReady(intent)
         }
-    }
-
-    fun clearSessionAndReturnHome(onHome: () -> Unit) {
-        onHome()
     }
 
     fun clearMessages() {

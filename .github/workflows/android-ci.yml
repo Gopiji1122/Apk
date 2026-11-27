@@ -80,7 +80,7 @@ jobs:
       - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OfflinePdfStudio-NeuralScanner-v3-arm64-debug-apk
+          name: OfflinePdfStudio-ProEngine-v4-arm64-debug-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
@@ -105,6 +105,6 @@ jobs:
       - name: Upload Release APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: OfflinePdfStudio-NeuralScanner-v3-arm64-release-apk
+          name: OfflinePdfStudio-ProEngine-v4-arm64-release-apk
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error

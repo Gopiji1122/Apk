@@ -73,7 +73,7 @@ import androidx.compose.material.icons.outlined.AutoFixHigh
 import androidx.compose.material.icons.outlined.CameraAlt
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CleaningServices
-import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Colorize
 import androidx.compose.material.icons.outlined.Compare
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Crop
@@ -132,21 +132,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -168,7 +172,6 @@ import com.offlinepdf.studio.core.imageprocessing.NormalizedPoint
 import com.offlinepdf.studio.core.imageprocessing.QuadStabilityTracker
 import com.offlinepdf.studio.core.imageprocessing.ScanFilterMode
 import com.offlinepdf.studio.core.imageprocessing.ScanQualityMode
-import com.offlinepdf.studio.core.imageprocessing.ScannedPageItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.Executors
@@ -255,9 +258,9 @@ fun ScannerScreen(
                 viewModel.selectReviewTool(ReviewTool.NONE)
             }
             state.stage == ScannerStage.REVIEW -> {
-                viewModel.openCameraToAddPage()
+                viewModel.requestExitScanner(onNavigateHome)
             }
-            else -> onNavigateHome()
+            else -> viewModel.requestExitScanner(onNavigateHome)
         }
     }
 
@@ -272,7 +275,7 @@ fun ScannerScreen(
                     LiveCameraScannerView(
                         state = state,
                         viewModel = viewModel,
-                        onNavigateHome = onNavigateHome,
+                        onRequestExit = { viewModel.requestExitScanner(onNavigateHome) },
                         onOpenGallery = {
                             galleryLauncher.launch(
                                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -291,7 +294,7 @@ fun ScannerScreen(
                 ReviewAndEditScreen(
                     state = state,
                     viewModel = viewModel,
-                    onNavigateHome = onNavigateHome,
+                    onRequestExit = { viewModel.requestExitScanner(onNavigateHome) },
                     onImportGallery = {
                         galleryLauncher.launch(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -309,7 +312,6 @@ fun ScannerScreen(
             }
         }
 
-        // Processing overlay
         if (state.isProcessing) {
             Box(
                 modifier = Modifier
@@ -317,31 +319,19 @@ fun ScannerScreen(
                     .background(Color.Black.copy(alpha = 0.55f)),
                 contentAlignment = Alignment.Center
             ) {
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = SurfaceDark
-                ) {
+                Surface(shape = RoundedCornerShape(16.dp), color = SurfaceDark) {
                     Row(
                         modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
-                            strokeWidth = 2.5.dp,
-                            color = AccentBlue
-                        )
-                        Text(
-                            text = state.processingMessage ?: "Processing...",
-                            color = Color.White,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
+                        CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.5.dp, color = AccentBlue)
+                        Text(state.processingMessage ?: "Processing...", color = Color.White, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
         }
 
-        // Open exported PDF banner
         if (state.lastExportedPdfUri != null) {
             Surface(
                 modifier = Modifier
@@ -376,7 +366,27 @@ fun ScannerScreen(
         )
     }
 
-    // Rename dialog
+    // Unsaved Scan Discard Warning Dialog
+    if (state.showDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissDiscardDialog() },
+            title = { Text("Discard unsaved scan?") },
+            text = {
+                Text("You have ${state.pages.size} unsaved page(s). Leaving now will clear all scanned pages.")
+            },
+            confirmButton = {
+                TextButton(onClick = { viewModel.confirmDiscardAndExit(onNavigateHome) }) {
+                    Text("Discard & Clear", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissDiscardDialog() }) {
+                    Text("Keep Editing")
+                }
+            }
+        )
+    }
+
     if (state.showRenameDialog) {
         var draft by remember(state.documentTitle) { mutableStateOf(state.documentTitle) }
         AlertDialog(
@@ -390,16 +400,11 @@ fun ScannerScreen(
                     label = { Text("Document name") }
                 )
             },
-            confirmButton = {
-                TextButton(onClick = { viewModel.updateDocumentTitle(draft) }) { Text("Save") }
-            },
-            dismissButton = {
-                TextButton(onClick = { viewModel.openRenameDialog(false) }) { Text("Cancel") }
-            }
+            confirmButton = { TextButton(onClick = { viewModel.updateDocumentTitle(draft) }) { Text("Save") } },
+            dismissButton = { TextButton(onClick = { viewModel.openRenameDialog(false) }) { Text("Cancel") } }
         )
     }
 
-    // Delete page confirmation
     if (state.showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { viewModel.confirmDeleteActivePage(false) },
@@ -410,13 +415,10 @@ fun ScannerScreen(
                     Text("Delete", color = MaterialTheme.colorScheme.error)
                 }
             },
-            dismissButton = {
-                TextButton(onClick = { viewModel.confirmDeleteActivePage(false) }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { viewModel.confirmDeleteActivePage(false) }) { Text("Cancel") } }
         )
     }
 
-    // Scanner Settings sheet
     if (state.showSettingsSheet) {
         ModalBottomSheet(
             onDismissRequest = { viewModel.openSettingsSheet(false) },
@@ -462,7 +464,6 @@ fun ScannerScreen(
         }
     }
 
-    // Export Options sheet (from Save PDF ^ chevron)
     if (state.showExportSheet) {
         ModalBottomSheet(
             onDismissRequest = { viewModel.openExportSheet(false) },
@@ -478,7 +479,6 @@ fun ScannerScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text("Export Document (${state.pages.size} page(s))", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text("Format", fontSize = 12.sp, color = Color.LightGray)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = opts.format == ExportFormat.PDF,
@@ -508,7 +508,7 @@ fun ScannerScreen(
                     colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
                     shape = RoundedCornerShape(24.dp)
                 ) {
-                    Text("Save ${opts.format.name}", fontWeight = FontWeight.SemiBold)
+                    Text("Save ${opts.format.displayName}", fontWeight = FontWeight.SemiBold)
                 }
                 Spacer(Modifier.height(10.dp))
             }
@@ -519,24 +519,17 @@ fun ScannerScreen(
 @Composable
 private fun CameraPermissionPrompt(onGrant: () -> Unit, onHome: () -> Unit) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color.Black)
-            .padding(24.dp),
+        modifier = Modifier.fillMaxSize().background(Color.Black).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Icon(Icons.Outlined.DocumentScanner, contentDescription = null, tint = AccentBlue, modifier = Modifier.size(56.dp))
         Spacer(Modifier.height(16.dp))
         Text("Camera Permission Required", color = Color.White, style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(8.dp))
-        Text("Grant camera access to scan documents completely offline.", color = Color.Gray, fontSize = 13.sp)
         Spacer(Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedButton(onClick = onHome) { Text("Home", color = Color.White) }
-            Button(onClick = onGrant, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) {
-                Text("Allow Camera")
-            }
+            Button(onClick = onGrant, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) { Text("Allow Camera") }
         }
     }
 }
@@ -545,7 +538,7 @@ private fun CameraPermissionPrompt(onGrant: () -> Unit, onHome: () -> Unit) {
 private fun LiveCameraScannerView(
     state: ScannerUiState,
     viewModel: ScannerViewModel,
-    onNavigateHome: () -> Unit,
+    onRequestExit: () -> Unit,
     onOpenGallery: () -> Unit
 ) {
     val context = LocalContext.current
@@ -564,7 +557,6 @@ private fun LiveCameraScannerView(
     val latestProcessing by rememberUpdatedState(state.isProcessing)
     val latestSensitivity by rememberUpdatedState(state.detectionSensitivity)
     val latestSound by rememberUpdatedState(state.captureSoundEnabled)
-    val latestQuality by rememberUpdatedState(state.qualityMode)
 
     fun triggerCapture() {
         val capture = imageCaptureRef ?: return
@@ -581,7 +573,6 @@ private fun LiveCameraScannerView(
                     stabilityTracker.reset()
                     viewModel.onPhotoCaptured(outFile)
                 }
-
                 override fun onError(exception: ImageCaptureException) {
                     viewModel.setCapturing(false)
                 }
@@ -593,7 +584,6 @@ private fun LiveCameraScannerView(
         cameraRef?.cameraControl?.enableTorch(state.flashEnabled)
     }
 
-    // Bind CameraX once per qualityMode change (Fast vs HD capture mode!)
     LaunchedEffect(previewViewRef, state.qualityMode) {
         val pv = previewViewRef ?: return@LaunchedEffect
         val providerFuture = ProcessCameraProvider.getInstance(context)
@@ -613,6 +603,7 @@ private fun LiveCameraScannerView(
 
                 val capture = ImageCapture.Builder()
                     .setCaptureMode(captureMode)
+                    .setJpegQuality(if (state.qualityMode == ScanQualityMode.HD) 96 else 90)
                     .setTargetRotation(rotation)
                     .build()
 
@@ -635,7 +626,7 @@ private fun LiveCameraScannerView(
                 analyzer.setAnalyzer(analysisExecutor) { imageProxy ->
                     try {
                         val now = System.currentTimeMillis()
-                        if (now - lastAnalyzedMs < 95L || latestCapturing || latestProcessing) {
+                        if (!latestAutoCapture || now - lastAnalyzedMs < 95L || latestCapturing || latestProcessing) {
                             return@setAnalyzer
                         }
                         lastAnalyzedMs = now
@@ -659,7 +650,7 @@ private fun LiveCameraScannerView(
                             viewModel.updateLiveDetection(
                                 quad = stability.detectedQuad,
                                 confidence = stability.confidence,
-                                progress = if (latestAutoCapture) stability.progress else 0f,
+                                progress = stability.progress,
                                 hint = stability.qualityHint
                             )
                             if (latestAutoCapture && stability.shouldAutoCapture) {
@@ -703,28 +694,21 @@ private fun LiveCameraScannerView(
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // 1. Minimal pure-black Top Bar (3 controls: Home | Fast/HD | Settings)
+        // 1. Minimal pure-black Top Bar (Home | Fast/HD | Settings)
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(52.dp)
-                .padding(horizontal = 12.dp),
+            modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            IconButton(onClick = onNavigateHome) {
+            IconButton(onClick = onRequestExit) {
                 Icon(Icons.Outlined.Home, contentDescription = "Home", tint = Color.White, modifier = Modifier.size(26.dp))
             }
 
-            // Center: Fast / HD toggle with real visual & functional state
             Surface(
                 onClick = { viewModel.toggleQualityMode() },
                 shape = RoundedCornerShape(20.dp),
                 color = if (state.qualityMode == ScanQualityMode.HD) AccentBlue.copy(alpha = 0.22f) else Color(0xFF1E1E22),
-                border = BorderStroke(
-                    1.dp,
-                    if (state.qualityMode == ScanQualityMode.HD) AccentBlue else Color.White.copy(alpha = 0.16f)
-                )
+                border = BorderStroke(1.dp, if (state.qualityMode == ScanQualityMode.HD) AccentBlue else Color.White.copy(alpha = 0.16f))
             ) {
                 Row(
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -751,7 +735,7 @@ private fun LiveCameraScannerView(
             }
         }
 
-        // 2. Full-bleed Live Camera Preview
+        // 2. Full-bleed Live Camera Preview + Mode-Specific Visual Guides
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -786,37 +770,94 @@ private fun LiveCameraScannerView(
                 modifier = Modifier.fillMaxSize()
             )
 
-            // Live 4-Corner Blue Dots + Document Outline Overlay
+            // Mode-specific framing guides + Auto-Capture corner overlay (HIDDEN in Manual mode!)
             Canvas(modifier = Modifier.fillMaxSize()) {
-                state.liveDetectedQuad?.let { q ->
-                    val tl = Offset(q.topLeft.x * size.width, q.topLeft.y * size.height)
-                    val tr = Offset(q.topRight.x * size.width, q.topRight.y * size.height)
-                    val br = Offset(q.bottomRight.x * size.width, q.bottomRight.y * size.height)
-                    val bl = Offset(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
-
-                    val path = Path().apply {
-                        moveTo(tl.x, tl.y); lineTo(tr.x, tr.y); lineTo(br.x, br.y); lineTo(bl.x, bl.y); close()
+                when (state.capturePreset) {
+                    CapturePresetMode.BOOK -> {
+                        // Dashed center spine divider for 2-page Book Split
+                        drawLine(
+                            color = AccentBlue.copy(alpha = 0.9f),
+                            start = Offset(size.width / 2f, size.height * 0.08f),
+                            end = Offset(size.width / 2f, size.height * 0.92f),
+                            strokeWidth = 2.5.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(18f, 12f), 0f)
+                        )
                     }
-                    drawPath(path, AccentBlue.copy(alpha = 0.14f))
-                    drawPath(path, AccentBlue, style = Stroke(width = 3.dp.toPx(), join = StrokeJoin.Round))
+                    CapturePresetMode.ID_CARD, CapturePresetMode.BUSINESS_CARD -> {
+                        val cardW = size.width * 0.84f
+                        val ratio = if (state.capturePreset == CapturePresetMode.ID_CARD) 1.586f else 1.75f
+                        val cardH = (cardW / ratio).coerceAtMost(size.height * 0.55f)
+                        val left = (size.width - cardW) / 2f
+                        val top = (size.height - cardH) / 2f
+                        drawRoundRect(
+                            color = AccentBlue.copy(alpha = 0.9f),
+                            topLeft = Offset(left, top),
+                            size = Size(cardW, cardH),
+                            cornerRadius = CornerRadius(14.dp.toPx(), 14.dp.toPx()),
+                            style = Stroke(width = 2.5.dp.toPx())
+                        )
+                    }
+                    else -> Unit
+                }
 
-                    listOf(tl, tr, br, bl).forEach { pt ->
-                        drawCircle(Color.White, radius = 12.dp.toPx(), center = pt)
-                        drawCircle(AccentBlue, radius = 9.5.dp.toPx(), center = pt)
+                // Only draw live auto-capture corner box when Auto-Capture is ON!
+                if (state.autoCaptureEnabled) {
+                    state.liveDetectedQuad?.let { q ->
+                        val tl = Offset(q.topLeft.x * size.width, q.topLeft.y * size.height)
+                        val tr = Offset(q.topRight.x * size.width, q.topRight.y * size.height)
+                        val br = Offset(q.bottomRight.x * size.width, q.bottomRight.y * size.height)
+                        val bl = Offset(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
+
+                        val path = Path().apply {
+                            moveTo(tl.x, tl.y); lineTo(tr.x, tr.y); lineTo(br.x, br.y); lineTo(bl.x, bl.y); close()
+                        }
+                        drawPath(path, AccentBlue.copy(alpha = 0.14f))
+                        drawPath(path, AccentBlue, style = Stroke(width = 3.dp.toPx(), join = StrokeJoin.Round))
+
+                        listOf(tl, tr, br, bl).forEach { pt ->
+                            drawCircle(Color.White, radius = 11.dp.toPx(), center = pt)
+                            drawCircle(AccentBlue, radius = 8.5.dp.toPx(), center = pt)
+                        }
                     }
                 }
 
                 focusIndicator?.let { pt ->
-                    drawCircle(Color.White.copy(alpha = 0.85f), radius = 28.dp.toPx(), center = pt, style = Stroke(2.dp.toPx()))
+                    drawCircle(Color.White.copy(alpha = 0.85f), radius = 26.dp.toPx(), center = pt, style = Stroke(2.dp.toPx()))
                 }
             }
 
-            // Centered translucent status pill ("Looking for document" / "Capturing... hold steady")
+            // Clear Auto / Manual mode badge at top of viewfinder
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 10.dp),
+                shape = RoundedCornerShape(16.dp),
+                color = Color.Black.copy(alpha = 0.58f)
+            ) {
+                Text(
+                    text = if (state.autoCaptureEnabled) "Auto Capture" else "Manual Capture",
+                    color = if (state.autoCaptureEnabled) AccentBlue else Color.White,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
+                )
+            }
+
+            // Centered mode-aware status / instruction pill
             val pillText = when {
-                state.idCardFrontPendingPath != null -> "Front saved — scan Back of ID card"
+                state.idCardFrontPendingPath != null -> "Step 2/2: Flip & scan Back of ID card"
+                !state.autoCaptureEnabled -> when (state.capturePreset) {
+                    CapturePresetMode.BOOK -> "Align spine with center line — tap shutter"
+                    CapturePresetMode.ID_CARD -> "Step 1/2: Align Front of ID — tap shutter"
+                    CapturePresetMode.BUSINESS_CARD -> "Align card in frame — tap shutter"
+                    else -> "Manual mode — tap shutter to capture"
+                }
                 state.cameraQualityHint != null -> state.cameraQualityHint
-                state.liveDetectedQuad != null && state.autoCaptureEnabled && state.autoCaptureProgress > 0.25f -> "Capturing... hold steady"
+                state.liveDetectedQuad != null && state.autoCaptureProgress > 0.25f -> "Capturing... hold steady"
                 state.liveDetectedQuad != null -> "Document detected"
+                state.capturePreset == CapturePresetMode.BOOK -> "Align spine with center line"
+                state.capturePreset == CapturePresetMode.ID_CARD -> "Step 1/2: Place Front of ID in frame"
+                state.capturePreset == CapturePresetMode.BUSINESS_CARD -> "Center business card in frame"
                 else -> "Looking for document"
             }
             Surface(
@@ -827,36 +868,26 @@ private fun LiveCameraScannerView(
                 Text(
                     text = pillText,
                     color = Color.White,
-                    fontSize = 14.sp,
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 9.dp)
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }
 
-            // Bottom-center floating Single | Batch segmented pill (replaces Scan | AI mode)
+            // Bottom-center floating Single | Batch pill
             Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 14.dp),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 14.dp),
                 shape = RoundedCornerShape(24.dp),
                 color = Color.Black.copy(alpha = 0.65f)
             ) {
                 Row(modifier = Modifier.padding(3.dp)) {
-                    SegmentedModePill(
-                        text = "Single",
-                        selected = !state.batchMode,
-                        onClick = { viewModel.setBatchMode(false) }
-                    )
-                    SegmentedModePill(
-                        text = "Batch",
-                        selected = state.batchMode,
-                        onClick = { viewModel.setBatchMode(true) }
-                    )
+                    SegmentedModePill("Single", !state.batchMode) { viewModel.setBatchMode(false) }
+                    SegmentedModePill("Batch", state.batchMode) { viewModel.setBatchMode(true) }
                 }
             }
         }
 
-        // 3. Horizontal Mode Strip (Whiteboard · Book · Document · ID card · Business card)
+        // 3. Horizontal Mode Strip
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -879,11 +910,9 @@ private fun LiveCameraScannerView(
             }
         }
 
-        // 4. Clean 5-Slot Bottom Control Bar (Gallery | Auto | Shutter Ring | Flash | Thumbnail+Badge)
+        // 4. Clean 5-Slot Bottom Control Bar
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -891,26 +920,34 @@ private fun LiveCameraScannerView(
                 Icon(Icons.Outlined.PhotoLibrary, contentDescription = "Gallery", tint = Color.White, modifier = Modifier.size(26.dp))
             }
 
-            IconButton(onClick = { viewModel.toggleAutoCapture() }) {
+            // Auto / Manual toggle with clear label underneath
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.clickable { viewModel.toggleAutoCapture() }.padding(horizontal = 4.dp)
+            ) {
                 Icon(
                     imageVector = Icons.Outlined.DocumentScanner,
                     contentDescription = "Auto Capture",
                     tint = if (state.autoCaptureEnabled) AccentBlue else Color.Gray,
-                    modifier = Modifier.size(26.dp)
+                    modifier = Modifier.size(24.dp)
+                )
+                Text(
+                    text = if (state.autoCaptureEnabled) "Auto" else "Manual",
+                    color = if (state.autoCaptureEnabled) AccentBlue else Color.Gray,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.Medium
                 )
             }
 
-            // Center Shutter Ring with animated blue progress arc
+            // Center Shutter Ring (progress ring ONLY shown in Auto mode!)
             Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .clickable { triggerCapture() },
+                modifier = Modifier.size(72.dp).clickable { triggerCapture() },
                 contentAlignment = Alignment.Center
             ) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val stroke = 4.dp.toPx()
                     drawCircle(color = Color.White, style = Stroke(width = stroke))
-                    if (state.autoCaptureProgress > 0.02f) {
+                    if (state.autoCaptureEnabled && state.autoCaptureProgress > 0.02f) {
                         drawArc(
                             color = AccentBlue,
                             startAngle = -90f,
@@ -937,11 +974,8 @@ private fun LiveCameraScannerView(
                 )
             }
 
-            // Captured Thumbnail + Blue Count Badge
             Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .clickable(enabled = state.pages.isNotEmpty()) { viewModel.openReviewScreen() },
+                modifier = Modifier.size(48.dp).clickable(enabled = state.pages.isNotEmpty()) { viewModel.openReviewScreen() },
                 contentAlignment = Alignment.Center
             ) {
                 val lastPage = state.pages.lastOrNull()
@@ -955,22 +989,13 @@ private fun LiveCameraScannerView(
                             .border(1.5.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(6.dp))
                     )
                     Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .background(AccentBlue),
+                        modifier = Modifier.align(Alignment.BottomEnd).size(22.dp).clip(CircleShape).background(AccentBlue),
                         contentAlignment = Alignment.Center
                     ) {
                         Text("${state.pages.size}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 } else {
-                    Box(
-                        modifier = Modifier
-                            .size(42.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(Color(0xFF26262A))
-                    )
+                    Box(modifier = Modifier.size(42.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF26262A)))
                 }
             }
         }
@@ -995,19 +1020,21 @@ private fun SegmentedModePill(text: String, selected: Boolean, onClick: () -> Un
 }
 
 // =====================================================================
-// REVIEW & EDIT SCREEN (Matching Reference Screenshots 1000430095 & 1000430096)
+// REVIEW & EDIT SCREEN (Inline Multi-Page Crop/Rotate + Live Cleanup/Adjust/Rotate + Working Resize)
 // =====================================================================
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReviewAndEditScreen(
     state: ScannerUiState,
     viewModel: ScannerViewModel,
-    onNavigateHome: () -> Unit,
+    onRequestExit: () -> Unit,
     onImportGallery: () -> Unit,
     onQuickSavePdf: () -> Unit,
     onSharePdf: () -> Unit
 ) {
     val activePage = state.activePage
+    val isInlineCrop = state.activeTool == ReviewTool.CROP
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1015,24 +1042,18 @@ private fun ReviewAndEditScreen(
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
-        // 1. Pure-Black Top Bar: Home | Editable Filename (dotted underline) | Quick Auto-Clean
+        // 1. Pure-Black Top Bar
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp)
-                .padding(horizontal = 10.dp),
+            modifier = Modifier.fillMaxWidth().height(54.dp).padding(horizontal = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            IconButton(onClick = onNavigateHome) {
+            IconButton(onClick = onRequestExit) {
                 Icon(Icons.Outlined.Home, contentDescription = "Home", tint = Color.White, modifier = Modifier.size(26.dp))
             }
 
             Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 8.dp)
-                    .clickable { viewModel.openRenameDialog(true) },
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp).clickable { viewModel.openRenameDialog(true) },
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
@@ -1043,12 +1064,7 @@ private fun ReviewAndEditScreen(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Canvas(
-                    modifier = Modifier
-                        .fillMaxWidth(0.75f)
-                        .height(2.dp)
-                        .padding(top = 1.dp)
-                ) {
+                Canvas(modifier = Modifier.fillMaxWidth(0.75f).height(2.dp).padding(top = 1.dp)) {
                     drawLine(
                         color = Color.White.copy(alpha = 0.55f),
                         start = Offset(0f, 0f),
@@ -1064,18 +1080,16 @@ private fun ReviewAndEditScreen(
             }
         }
 
-        // 2. Dark Charcoal Page Stage + Floating Page Nav Bar
+        // 2. Dark Charcoal Page Stage + Inline Auto-Detect/Full Pills (when Crop active) + Page Nav Bar
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .background(StageCharcoal)
+            modifier = Modifier.fillMaxWidth().weight(1f).background(StageCharcoal)
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                    .clipToBounds()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
                 if (activePage != null) {
@@ -1089,14 +1103,15 @@ private fun ReviewAndEditScreen(
                             )
                         }
                         ReviewTool.CLEANUP -> {
-                            InteractiveCleanupCanvas(
+                            InteractiveLiveCleanupCanvas(
                                 imagePath = activePage.enhancedImagePath,
                                 revision = state.previewRevision,
-                                strokes = state.pendingCleanupStrokes,
                                 currentMode = state.cleanupMode,
                                 customColorArgb = state.cleanupCustomColorArgb,
                                 brushRadiusNorm = state.cleanupBrushRadiusNorm,
-                                onStrokeComplete = viewModel::addCleanupStroke
+                                eyedropperActive = state.cleanupEyedropperActive,
+                                onEyedropperTap = viewModel::sampleCleanupColorFromPage,
+                                onStrokeComplete = viewModel::applySingleCleanupStrokeLive
                             )
                         }
                         ReviewTool.MARKUP -> {
@@ -1112,9 +1127,17 @@ private fun ReviewAndEditScreen(
                         }
                         else -> {
                             val showPath = if (state.compareOriginal) activePage.warpedImagePath else activePage.enhancedImagePath
+                            val liveRot = if (state.activeTool == ReviewTool.ROTATE) state.pendingFineRotation else 0f
+                            val liveFilter = if (state.activeTool == ReviewTool.ADJUST) {
+                                buildLiveColorFilter(state.liveAdjustBrightness, state.liveAdjustContrast)
+                            } else {
+                                null
+                            }
                             PagePreviewImage(
                                 path = showPath,
                                 revision = state.previewRevision,
+                                liveRotationDeg = liveRot,
+                                colorFilter = liveFilter,
                                 modifier = Modifier.fillMaxSize()
                             )
                         }
@@ -1122,12 +1145,45 @@ private fun ReviewAndEditScreen(
                 }
             }
 
-            // Floating Page Navigation Bar (< | Insert | Page 1 of N ^/v | >)
-            if (state.activeTool == ReviewTool.NONE) {
+            // Inline Crop Quick Pills (Auto-detect & Full Frame) right above page nav bar (like 1000430154.jpg!)
+            if (isInlineCrop) {
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally)
+                ) {
+                    Surface(
+                        onClick = { viewModel.autoDetectActivePageCrop() },
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.White
+                    ) {
+                        Text(
+                            text = "Auto-detect",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                    Surface(
+                        onClick = { viewModel.resetCropToFull() },
+                        shape = RoundedCornerShape(8.dp),
+                        color = Color.White
+                    ) {
+                        Text(
+                            text = "Full Frame",
+                            color = Color.Black,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+            }
+
+            // Page Navigation Bar STAYS VISIBLE in NONE and CROP modes (slide pages while cropping!)
+            if (state.activeTool == ReviewTool.NONE || isInlineCrop) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -1205,17 +1261,14 @@ private fun ReviewAndEditScreen(
             }
         }
 
-        // 3. Collapsible Horizontal Thumbnail Filmstrip (matching 1000430095.jpg)
+        // 3. Collapsible Horizontal Thumbnail Filmstrip (stays usable even in Crop mode!)
         AnimatedVisibility(
-            visible = state.filmstripExpanded && state.activeTool == ReviewTool.NONE,
+            visible = state.filmstripExpanded && (state.activeTool == ReviewTool.NONE || isInlineCrop),
             enter = expandVertically() + fadeIn(),
             exit = shrinkVertically() + fadeOut()
         ) {
             LazyRow(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color.Black)
-                    .padding(vertical = 10.dp),
+                modifier = Modifier.fillMaxWidth().background(Color.Black).padding(vertical = 10.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -1239,28 +1292,19 @@ private fun ReviewAndEditScreen(
                             modifier = Modifier.fillMaxSize()
                         )
                         Surface(
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .padding(bottom = 5.dp),
+                            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 5.dp),
                             shape = RoundedCornerShape(4.dp),
                             color = Color.Black.copy(alpha = 0.72f)
                         ) {
-                            Text(
-                                text = "${idx + 1}",
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                            )
+                            Text("${idx + 1}", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp))
                         }
                     }
                 }
             }
         }
 
-        // 4. Contextual Inline Tool Panel (when Crop / Rotate / Filters / Adjust / Cleanup / Markup / Resize is active)
+        // 4. Contextual Tool Panels vs Default/Inline-Crop Tool Strip + Bottom Action Bar
         when (state.activeTool) {
-            ReviewTool.CROP -> CropToolPanel(viewModel)
             ReviewTool.ROTATE -> RotateToolPanel(state, viewModel)
             ReviewTool.FILTERS -> FiltersToolPanel(state, viewModel)
             ReviewTool.ADJUST -> AdjustToolPanel(state, viewModel)
@@ -1268,34 +1312,37 @@ private fun ReviewAndEditScreen(
             ReviewTool.MARKUP -> MarkupToolPanel(state, viewModel)
             ReviewTool.RESIZE -> ResizeToolPanel(state, viewModel)
             else -> {
-                // 5. Horizontally Scrollable 10-Tool Strip (NO OCR)
+                // Tool strip STAYS visible in both NONE and CROP (with Crop highlighted blue & Rotate right next to it!)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .background(Color.Black)
                         .horizontalScroll(rememberScrollState())
                         .padding(horizontal = 10.dp, vertical = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(18.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    ToolStripItem(Icons.Outlined.CameraAlt, "Retake") { viewModel.startRetakeActivePage() }
-                    ToolStripItem(Icons.Outlined.Crop, "Crop") { viewModel.selectReviewTool(ReviewTool.CROP) }
-                    ToolStripItem(Icons.Outlined.Refresh, "Rotate") { viewModel.selectReviewTool(ReviewTool.ROTATE) }
-                    ToolStripItem(Icons.Outlined.Filter, "Filters") { viewModel.selectReviewTool(ReviewTool.FILTERS) }
-                    ToolStripItem(Icons.Outlined.Tune, "Adjust") { viewModel.selectReviewTool(ReviewTool.ADJUST) }
-                    ToolStripItem(Icons.Outlined.CleaningServices, "Cleanup") { viewModel.selectReviewTool(ReviewTool.CLEANUP) }
-                    ToolStripItem(Icons.Outlined.Draw, "Markup") { viewModel.selectReviewTool(ReviewTool.MARKUP) }
-                    ToolStripItem(Icons.Outlined.AspectRatio, "Resize") { viewModel.selectReviewTool(ReviewTool.RESIZE) }
-                    ToolStripItem(Icons.Outlined.Reorder, "Reorder") { viewModel.selectReviewTool(ReviewTool.REORDER) }
-                    ToolStripItem(Icons.Outlined.DeleteOutline, "Delete") { viewModel.confirmDeleteActivePage(true) }
+                    ToolStripItem(Icons.Outlined.CameraAlt, "Retake", false) { viewModel.startRetakeActivePage() }
+                    ToolStripItem(Icons.Outlined.Crop, "Crop", isInlineCrop) { viewModel.selectReviewTool(ReviewTool.CROP) }
+                    ToolStripItem(Icons.Outlined.Refresh, "Rotate", false) {
+                        if (isInlineCrop) {
+                            viewModel.rotateActivePage90(clockwise = true)
+                        } else {
+                            viewModel.selectReviewTool(ReviewTool.ROTATE)
+                        }
+                    }
+                    ToolStripItem(Icons.Outlined.Filter, "Filters", false) { viewModel.selectReviewTool(ReviewTool.FILTERS) }
+                    ToolStripItem(Icons.Outlined.Tune, "Adjust", false) { viewModel.selectReviewTool(ReviewTool.ADJUST) }
+                    ToolStripItem(Icons.Outlined.CleaningServices, "Cleanup", false) { viewModel.selectReviewTool(ReviewTool.CLEANUP) }
+                    ToolStripItem(Icons.Outlined.Draw, "Markup", false) { viewModel.selectReviewTool(ReviewTool.MARKUP) }
+                    ToolStripItem(Icons.Outlined.AspectRatio, "Resize", false) { viewModel.selectReviewTool(ReviewTool.RESIZE) }
+                    ToolStripItem(Icons.Outlined.Reorder, "Reorder", false) { viewModel.selectReviewTool(ReviewTool.REORDER) }
+                    ToolStripItem(Icons.Outlined.DeleteOutline, "Delete", false) { viewModel.confirmDeleteActivePage(true) }
                 }
 
-                // 6. Bottom Action Row: Camera+ | Share | Save PDF | ^
+                // Bottom Action Row: Camera+ | Share | Save PDF | ^
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color.Black)
-                        .padding(horizontal = 18.dp, vertical = 10.dp),
+                    modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 18.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -1305,12 +1352,7 @@ private fun ReviewAndEditScreen(
                         color = Color.Transparent,
                         border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.75f))
                     ) {
-                        Icon(
-                            Icons.Outlined.AddAPhoto,
-                            contentDescription = "Add Page",
-                            tint = Color.White,
-                            modifier = Modifier.padding(10.dp).size(22.dp)
-                        )
+                        Icon(Icons.Outlined.AddAPhoto, contentDescription = "Add Page", tint = Color.White, modifier = Modifier.padding(10.dp).size(22.dp))
                     }
 
                     Surface(
@@ -1319,21 +1361,12 @@ private fun ReviewAndEditScreen(
                         color = Color.Transparent,
                         border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.75f))
                     ) {
-                        Icon(
-                            Icons.Outlined.Share,
-                            contentDescription = "Share",
-                            tint = Color.White,
-                            modifier = Modifier.padding(10.dp).size(22.dp)
-                        )
+                        Icon(Icons.Outlined.Share, contentDescription = "Share", tint = Color.White, modifier = Modifier.padding(10.dp).size(22.dp))
                     }
 
                     Spacer(Modifier.weight(1f))
 
-                    // Split primary blue pill: [ Save PDF | ^ ]
-                    Surface(
-                        shape = RoundedCornerShape(26.dp),
-                        color = AccentBlue
-                    ) {
+                    Surface(shape = RoundedCornerShape(26.dp), color = AccentBlue) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = "Save PDF",
@@ -1341,18 +1374,19 @@ private fun ReviewAndEditScreen(
                                 fontWeight = FontWeight.SemiBold,
                                 fontSize = 15.sp,
                                 modifier = Modifier
-                                    .clickable { onQuickSavePdf() }
+                                    .clickable {
+                                        if (isInlineCrop) viewModel.applyCropAndPerspective()
+                                        onQuickSavePdf()
+                                    }
                                     .padding(start = 22.dp, end = 14.dp, top = 12.dp, bottom = 12.dp)
                             )
+                            Box(modifier = Modifier.width(1.dp).height(22.dp).background(Color.White.copy(alpha = 0.35f)))
                             Box(
                                 modifier = Modifier
-                                    .width(1.dp)
-                                    .height(22.dp)
-                                    .background(Color.White.copy(alpha = 0.35f))
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .clickable { viewModel.openExportSheet(true) }
+                                    .clickable {
+                                        if (isInlineCrop) viewModel.applyCropAndPerspective()
+                                        viewModel.openExportSheet(true)
+                                    }
                                     .padding(horizontal = 12.dp, vertical = 10.dp)
                             ) {
                                 Icon(Icons.Outlined.KeyboardArrowUp, contentDescription = "More Export Options", tint = Color.White)
@@ -1364,7 +1398,6 @@ private fun ReviewAndEditScreen(
         }
     }
 
-    // Reorder Grid Sheet
     if (state.activeTool == ReviewTool.REORDER) {
         ModalBottomSheet(
             onDismissRequest = { viewModel.selectReviewTool(ReviewTool.NONE) },
@@ -1372,10 +1405,7 @@ private fun ReviewAndEditScreen(
             contentColor = Color.White
         ) {
             Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                    .navigationBarsPadding()
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp).navigationBarsPadding()
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -1441,53 +1471,32 @@ private fun ReviewAndEditScreen(
 }
 
 @Composable
-private fun ToolStripItem(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 2.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+private fun ToolStripItem(icon: ImageVector, label: String, active: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = if (active) AccentBlue else Color.Transparent
     ) {
-        Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(22.dp))
-        Text(label, color = Color(0xFFD0D0D8), fontSize = 11.sp, maxLines = 1)
-    }
-}
-
-// =====================================================================
-// TOOL PANELS (Crop, Rotate, Filters, Adjust, Cleanup, Markup, Resize)
-// =====================================================================
-@Composable
-private fun CropToolPanel(viewModel: ScannerViewModel) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        TextButton(onClick = { viewModel.selectReviewTool(ReviewTool.NONE) }) { Text("Cancel", color = Color.LightGray) }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = { viewModel.autoDetectActivePageCrop() }) { Text("Auto", color = Color.White) }
-            OutlinedButton(onClick = { viewModel.resetCropToFull() }) { Text("Full", color = Color.White) }
-        }
-        Button(onClick = { viewModel.applyCropAndPerspective() }, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) {
-            Text("Apply")
+        Column(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Icon(icon, contentDescription = label, tint = Color.White, modifier = Modifier.size(22.dp))
+            Text(label, color = if (active) Color.White else Color(0xFFD0D0D8), fontSize = 11.sp, maxLines = 1)
         }
     }
 }
 
+// =====================================================================
+// TOOL PANELS (Live Rotate Dial, Filters, Live Adjust, Live Cleanup + Eyedropper, Markup, Working Resize)
+// =====================================================================
 @Composable
 private fun RotateToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) {
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Curved Protractor Rotation Dial
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -1496,12 +1505,7 @@ private fun RotateToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
             IconButton(onClick = { viewModel.rotateActivePage90(clockwise = false) }) {
                 Icon(Icons.Outlined.RotateLeft, contentDescription = "Rotate Left 90", tint = Color.White)
             }
-            Text(
-                text = String.format("%+.1f°", state.pendingFineRotation),
-                color = AccentBlue,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 14.sp
-            )
+            Text(String.format("%+.1f°", state.pendingFineRotation), color = AccentBlue, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             IconButton(onClick = { viewModel.rotateActivePage90(clockwise = true) }) {
                 Icon(Icons.Outlined.RotateRight, contentDescription = "Rotate Right 90", tint = Color.White)
             }
@@ -1512,7 +1516,7 @@ private fun RotateToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
         )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = { viewModel.selectReviewTool(ReviewTool.NONE) }) { Text("Cancel", color = Color.LightGray) }
-            TextButton(onClick = { viewModel.updatePendingFineRotation(0f) }) { Text("0°", color = Color.White) }
+            TextButton(onClick = { viewModel.updatePendingFineRotation(0f) }) { Text("Reset 0°", color = Color.White) }
             Button(onClick = { viewModel.applyFineRotation() }, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) {
                 Text("Apply")
             }
@@ -1530,7 +1534,7 @@ private fun CurvedRotationDial(degrees: Float, onDegreesChange: (Float) -> Unit)
             .pointerInput(Unit) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
-                    onDegreesChange((latestDeg + dragAmount.x * 0.18f).coerceIn(-45f, 45f))
+                    onDegreesChange((latestDeg + dragAmount.x * 0.22f).coerceIn(-45f, 45f))
                 }
             }
     ) {
@@ -1566,25 +1570,32 @@ private fun CurvedRotationDial(degrees: Float, onDegreesChange: (Float) -> Unit)
 @Composable
 private fun FiltersToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) {
     val current = state.activePage?.filterMode ?: ScanFilterMode.AUTO_COLOR
+    val proFilters = listOf(
+        ScanFilterMode.ORIGINAL,
+        ScanFilterMode.AUTO_COLOR,
+        ScanFilterMode.DOCUMENT,
+        ScanFilterMode.GRAYSCALE,
+        ScanFilterMode.ENHANCED_DOCUMENT,
+        ScanFilterMode.COLOR,
+        ScanFilterMode.BLACK_AND_WHITE,
+        ScanFilterMode.HIGH_CONTRAST,
+        ScanFilterMode.PHOTO,
+        ScanFilterMode.SOFT_COLOR
+    )
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().background(Color.Black).padding(vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            ScanFilterMode.entries.forEach { mode ->
+            proFilters.forEach { mode ->
+                val label = if (mode == ScanFilterMode.ENHANCED_DOCUMENT) "Whiteboard" else mode.displayName
                 FilterChip(
                     selected = current == mode,
                     onClick = { viewModel.applyFilterToActivePage(mode) },
-                    label = { Text(mode.displayName, fontSize = 12.sp) }
+                    label = { Text(label, fontSize = 12.sp) }
                 )
             }
         }
@@ -1599,9 +1610,7 @@ private fun FiltersToolPanel(state: ScannerUiState, viewModel: ScannerViewModel)
             Button(
                 onClick = { viewModel.selectReviewTool(ReviewTool.NONE) },
                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
-            ) {
-                Text("Done")
-            }
+            ) { Text("Done") }
         }
     }
 }
@@ -1615,10 +1624,7 @@ private fun AdjustToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
     var strength by remember(adj) { mutableFloatStateOf(adj.filterStrength) }
 
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Row(
@@ -1655,10 +1661,16 @@ private fun AdjustToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
         CompactSliderRow("Strength", strength, 0f..1f, { strength = it }) {
             viewModel.updateCustomAdjustments(adj.copy(filterStrength = strength))
         }
-        CompactSliderRow("Brightness", brightness, -0.35f..0.35f, { brightness = it }) {
+        CompactSliderRow("Brightness", brightness, -0.35f..0.35f, {
+            brightness = it
+            viewModel.setLiveAdjustPreview(brightness, contrast)
+        }) {
             viewModel.updateCustomAdjustments(adj.copy(brightness = brightness))
         }
-        CompactSliderRow("Contrast", contrast, 0.7f..1.6f, { contrast = it }) {
+        CompactSliderRow("Contrast", contrast, 0.7f..1.6f, {
+            contrast = it
+            viewModel.setLiveAdjustPreview(brightness, contrast)
+        }) {
             viewModel.updateCustomAdjustments(adj.copy(contrast = contrast))
         }
         CompactSliderRow("Sharpness", sharpness, 0f..1f, { sharpness = it }) {
@@ -1689,21 +1701,22 @@ private fun CompactSliderRow(
 
 @Composable
 private fun CleanupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) {
+    // Rich Custom Color palette (neutral papers + vivid colors) + Eyedropper!
     val swatches = listOf(
-        android.graphics.Color.WHITE to "White",
-        android.graphics.Color.parseColor("#FAF7F0") to "Warm",
-        android.graphics.Color.parseColor("#F2F4F8") to "Cool",
-        android.graphics.Color.parseColor("#E5E5E5") to "Gray",
-        android.graphics.Color.BLACK to "Black"
+        android.graphics.Color.WHITE,
+        android.graphics.Color.parseColor("#FAF6EC"),
+        android.graphics.Color.parseColor("#EFE9DA"),
+        android.graphics.Color.parseColor("#DCDCDC"),
+        android.graphics.Color.BLACK,
+        android.graphics.Color.parseColor("#E53935"),
+        android.graphics.Color.parseColor("#1E88E5"),
+        android.graphics.Color.parseColor("#43A047"),
+        android.graphics.Color.parseColor("#FDD835")
     )
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Mode switcher: Surrounding Color (OpenCV Inpaint) vs Custom Color
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1723,22 +1736,32 @@ private fun CleanupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel)
 
         if (state.cleanupMode == CleanupBrushMode.CUSTOM_COLOR) {
             Row(
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Color:", color = Color.LightGray, fontSize = 12.sp)
-                swatches.forEach { (argb, _) ->
-                    val selected = state.cleanupCustomColorArgb == argb
+                // Eyedropper button (pick exact color straight from page!)
+                Surface(
+                    onClick = { viewModel.toggleCleanupEyedropper() },
+                    shape = CircleShape,
+                    color = if (state.cleanupEyedropperActive) AccentBlue else Color(0xFF28282E),
+                    border = BorderStroke(1.dp, if (state.cleanupEyedropperActive) Color.White else Color.Gray)
+                ) {
+                    Icon(
+                        Icons.Outlined.Colorize,
+                        contentDescription = "Pick from page",
+                        tint = Color.White,
+                        modifier = Modifier.padding(6.dp).size(18.dp)
+                    )
+                }
+                swatches.forEach { argb ->
+                    val selected = !state.cleanupEyedropperActive && state.cleanupCustomColorArgb == argb
                     Box(
                         modifier = Modifier
                             .size(28.dp)
                             .clip(CircleShape)
                             .background(Color(argb))
-                            .border(
-                                width = if (selected) 2.5.dp else 1.dp,
-                                color = if (selected) AccentBlue else Color.Gray,
-                                shape = CircleShape
-                            )
+                            .border(if (selected) 2.5.dp else 1.dp, if (selected) AccentBlue else Color.Gray, CircleShape)
                             .clickable { viewModel.setCleanupCustomColor(argb) }
                     )
                 }
@@ -1746,7 +1769,7 @@ private fun CleanupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel)
         }
 
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Brush", color = Color.LightGray, fontSize = 12.sp, modifier = Modifier.width(52.dp))
+            Text("Brush", color = Color.LightGray, fontSize = 12.sp, modifier = Modifier.width(48.dp))
             Slider(
                 value = state.cleanupBrushRadiusNorm,
                 onValueChange = viewModel::setCleanupBrushRadius,
@@ -1760,19 +1783,18 @@ private fun CleanupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel)
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row {
-                TextButton(onClick = { viewModel.selectReviewTool(ReviewTool.NONE) }) { Text("Cancel", color = Color.LightGray) }
-                TextButton(
-                    onClick = { viewModel.undoCleanupStroke() },
-                    enabled = state.pendingCleanupStrokes.isNotEmpty()
-                ) { Text("Undo", color = Color.White) }
+            TextButton(
+                onClick = { viewModel.undoLiveCleanup() },
+                enabled = state.cleanupUndoCount > 0
+            ) {
+                Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(4.dp))
+                Text("Undo (${state.cleanupUndoCount})")
             }
             Button(
-                onClick = { viewModel.applyCleanupStrokes() },
+                onClick = { viewModel.selectReviewTool(ReviewTool.NONE) },
                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
-            ) {
-                Text("Apply (${state.pendingCleanupStrokes.size})")
-            }
+            ) { Text("Done") }
         }
     }
 }
@@ -1787,10 +1809,7 @@ private fun MarkupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
         android.graphics.Color.BLACK
     )
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(
@@ -1799,16 +1818,8 @@ private fun MarkupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
             verticalAlignment = Alignment.CenterVertically
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(
-                    selected = !state.markupIsHighlighter,
-                    onClick = { viewModel.setMarkupHighlighter(false) },
-                    label = { Text("Pen", fontSize = 12.sp) }
-                )
-                FilterChip(
-                    selected = state.markupIsHighlighter,
-                    onClick = { viewModel.setMarkupHighlighter(true) },
-                    label = { Text("Highlighter", fontSize = 12.sp) }
-                )
+                FilterChip(selected = !state.markupIsHighlighter, onClick = { viewModel.setMarkupHighlighter(false) }, label = { Text("Pen", fontSize = 12.sp) })
+                FilterChip(selected = state.markupIsHighlighter, onClick = { viewModel.setMarkupHighlighter(true) }, label = { Text("Highlighter", fontSize = 12.sp) })
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 colors.forEach { argb ->
@@ -1842,40 +1853,48 @@ private fun MarkupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
 private fun ResizeToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) {
     val opts = state.exportOptions
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color.Black)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+        modifier = Modifier.fillMaxWidth().background(Color.Black).padding(horizontal = 16.dp, vertical = 10.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.horizontalScroll(rememberScrollState())) {
             ExportPageSize.entries.forEach { sz ->
                 FilterChip(
                     selected = opts.pageSize == sz,
-                    onClick = { viewModel.updateExportOptions(opts.copy(pageSize = sz)) },
+                    onClick = { viewModel.applyResize(sz, opts.orientation, applyToAll = false) },
                     label = { Text(sz.displayName, fontSize = 12.sp) }
                 )
             }
         }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 ExportOrientation.entries.forEach { ori ->
                     FilterChip(
                         selected = opts.orientation == ori,
-                        onClick = { viewModel.updateExportOptions(opts.copy(orientation = ori)) },
-                        label = { Text(ori.name.lowercase().replaceFirstChar { it.uppercase() }, fontSize = 12.sp) }
+                        onClick = { viewModel.applyResize(opts.pageSize, ori, applyToAll = false) },
+                        label = { Text(ori.displayName, fontSize = 12.sp) }
                     )
                 }
             }
-            Button(onClick = { viewModel.selectReviewTool(ReviewTool.NONE) }, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) {
-                Text("Done")
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                TextButton(onClick = { viewModel.applyResize(opts.pageSize, opts.orientation, applyToAll = true) }) {
+                    Text("All", color = AccentBlue, fontSize = 12.sp)
+                }
+                Button(
+                    onClick = { viewModel.selectReviewTool(ReviewTool.NONE) },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
+                ) { Text("Done", fontSize = 13.sp) }
             }
         }
     }
 }
 
 // =====================================================================
-// INTERACTIVE CANVASES (Crop with Loupe, Cleanup Brush, Markup Brush)
+// INTERACTIVE CANVASES (See-Through Crop Rings + Live Cleanup + Markup)
 // =====================================================================
 @Composable
 private fun InteractiveCropCanvas(
@@ -1888,7 +1907,7 @@ private fun InteractiveCropCanvas(
         value = withContext(Dispatchers.IO) { decodeForUi(imagePath, 1400) }
     }
     val latestQuad by rememberUpdatedState(quad)
-    var activeHandle by remember { mutableIntStateOf(-1) } // 0..3 corners, 4..7 edge midpoints
+    var activeHandle by remember { mutableIntStateOf(-1) }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val loaded = bmp
@@ -1896,9 +1915,7 @@ private fun InteractiveCropCanvas(
             CircularProgressIndicator(color = AccentBlue)
             return@BoxWithConstraints
         }
-        val boxW = constraints.maxWidth.toFloat()
-        val boxH = constraints.maxHeight.toFloat()
-        val imgRect = computeFitRect(loaded.width.toFloat(), loaded.height.toFloat(), boxW, boxH)
+        val imgRect = computeFitRect(loaded.width.toFloat(), loaded.height.toFloat(), constraints.maxWidth.toFloat(), constraints.maxHeight.toFloat())
 
         Image(
             bitmap = loaded.asImageBitmap(),
@@ -1925,7 +1942,7 @@ private fun InteractiveCropCanvas(
                                 Offset(imgRect.left + (q.topLeft.x + q.bottomLeft.x) * 0.5f * imgRect.width, imgRect.top + (q.topLeft.y + q.bottomLeft.y) * 0.5f * imgRect.height)
                             )
                             var best = -1
-                            var bestDist = 110f
+                            var bestDist = 115f
                             handles.forEachIndexed { idx, pt ->
                                 val d = hypot(pt.x - start.x, pt.y - start.y)
                                 if (d < bestDist) { bestDist = d; best = idx }
@@ -1965,24 +1982,28 @@ private fun InteractiveCropCanvas(
             val path = Path().apply { moveTo(tl.x, tl.y); lineTo(tr.x, tr.y); lineTo(br.x, br.y); lineTo(bl.x, bl.y); close() }
             drawPath(path, AccentBlue, style = Stroke(2.5.dp.toPx()))
 
-            // 4 corner circles
+            // See-through circular corner rings (so you see the exact paper corner inside!)
             listOf(tl, tr, br, bl).forEachIndexed { i, pt ->
-                drawCircle(Color.White, radius = if (activeHandle == i) 14.dp.toPx() else 11.dp.toPx(), center = pt)
-                drawCircle(AccentBlue, radius = if (activeHandle == i) 10.dp.toPx() else 8.dp.toPx(), center = pt)
-            }
-            // 4 edge midpoint pills
-            val mids = listOf(
-                Offset((tl.x + tr.x) / 2f, (tl.y + tr.y) / 2f),
-                Offset((tr.x + br.x) / 2f, (tr.y + br.y) / 2f),
-                Offset((bl.x + br.x) / 2f, (bl.y + br.y) / 2f),
-                Offset((tl.x + bl.x) / 2f, (tl.y + bl.y) / 2f)
-            )
-            mids.forEach { pt ->
-                drawCircle(Color.White, radius = 6.dp.toPx(), center = pt)
-                drawCircle(AccentBlue, radius = 4.dp.toPx(), center = pt)
+                val r = if (activeHandle == i) 15.dp.toPx() else 12.dp.toPx()
+                drawCircle(AccentBlue.copy(alpha = 0.22f), radius = r, center = pt)
+                drawCircle(AccentBlue, radius = r, center = pt, style = Stroke(2.8.dp.toPx()))
             }
 
-            // Live Corner Magnifier Loupe when dragging any corner
+            // Rectangular midpoint handles
+            val topMid = Offset((tl.x + tr.x) / 2f, (tl.y + tr.y) / 2f)
+            val botMid = Offset((bl.x + br.x) / 2f, (bl.y + br.y) / 2f)
+            val leftMid = Offset((tl.x + bl.x) / 2f, (tl.y + bl.y) / 2f)
+            val rightMid = Offset((tr.x + br.x) / 2f, (tr.y + br.y) / 2f)
+            val pillLong = 24.dp.toPx()
+            val pillShort = 7.dp.toPx()
+            listOf(topMid, botMid).forEach { pt ->
+                drawRoundRect(AccentBlue, Offset(pt.x - pillLong / 2f, pt.y - pillShort / 2f), Size(pillLong, pillShort), CornerRadius(3.dp.toPx()))
+            }
+            listOf(leftMid, rightMid).forEach { pt ->
+                drawRoundRect(AccentBlue, Offset(pt.x - pillShort / 2f, pt.y - pillLong / 2f), Size(pillShort, pillLong), CornerRadius(3.dp.toPx()))
+            }
+
+            // Live Corner Magnifier Loupe
             if (activeHandle in 0..3) {
                 val activeNorm = when (activeHandle) {
                     0 -> quad.topLeft; 1 -> quad.topRight; 2 -> quad.bottomRight; else -> quad.bottomLeft
@@ -2010,13 +2031,14 @@ private fun InteractiveCropCanvas(
 }
 
 @Composable
-private fun InteractiveCleanupCanvas(
+private fun InteractiveLiveCleanupCanvas(
     imagePath: String,
     revision: Int,
-    strokes: List<com.offlinepdf.studio.core.imageprocessing.CleanupStroke>,
     currentMode: CleanupBrushMode,
     customColorArgb: Int,
     brushRadiusNorm: Float,
+    eyedropperActive: Boolean,
+    onEyedropperTap: (Float, Float) -> Unit,
     onStrokeComplete: (List<NormalizedPoint>) -> Unit
 ) {
     val bmp by produceState<Bitmap?>(initialValue = null, imagePath, revision) {
@@ -2024,6 +2046,8 @@ private fun InteractiveCleanupCanvas(
     }
     var livePoints by remember { mutableStateOf<List<NormalizedPoint>>(emptyList()) }
     val latestOnComplete by rememberUpdatedState(onStrokeComplete)
+    val latestOnEyedropper by rememberUpdatedState(onEyedropperTap)
+    val latestEyedropperActive by rememberUpdatedState(eyedropperActive)
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val loaded = bmp ?: return@BoxWithConstraints
@@ -2031,7 +2055,7 @@ private fun InteractiveCleanupCanvas(
 
         Image(
             bitmap = loaded.asImageBitmap(),
-            contentDescription = "Cleanup Preview",
+            contentDescription = "Live Cleanup Preview",
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize()
         )
@@ -2040,8 +2064,18 @@ private fun InteractiveCleanupCanvas(
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(imgRect) {
+                    detectTapGestures { offset ->
+                        if (latestEyedropperActive) {
+                            val nx = ((offset.x - imgRect.left) / imgRect.width).coerceIn(0f, 1f)
+                            val ny = ((offset.y - imgRect.top) / imgRect.height).coerceIn(0f, 1f)
+                            latestOnEyedropper(nx, ny)
+                        }
+                    }
+                }
+                .pointerInput(imgRect) {
                     detectDragGestures(
                         onDragStart = { offset ->
+                            if (latestEyedropperActive) return@detectDragGestures
                             val nx = ((offset.x - imgRect.left) / imgRect.width).coerceIn(0f, 1f)
                             val ny = ((offset.y - imgRect.top) / imgRect.height).coerceIn(0f, 1f)
                             livePoints = listOf(NormalizedPoint(nx, ny))
@@ -2052,6 +2086,7 @@ private fun InteractiveCleanupCanvas(
                         },
                         onDragCancel = { livePoints = emptyList() },
                         onDrag = { change, _ ->
+                            if (latestEyedropperActive) return@detectDragGestures
                             change.consume()
                             val p = change.position
                             val nx = ((p.x - imgRect.left) / imgRect.width).coerceIn(0f, 1f)
@@ -2061,26 +2096,23 @@ private fun InteractiveCleanupCanvas(
                     )
                 }
         ) {
-            val baseDim = min(imgRect.width, imgRect.height)
-            fun drawStroke(pts: List<NormalizedPoint>, radiusNorm: Float, mode: CleanupBrushMode, customArgb: Int) {
-                if (pts.isEmpty()) return
-                val color = if (mode == CleanupBrushMode.SURROUNDING_COLOR) AccentBlue.copy(alpha = 0.45f) else Color(customArgb)
-                val strokeW = (radiusNorm * 2f * baseDim).coerceAtLeast(10f)
-                if (pts.size == 1) {
-                    val p = pts.first()
+            if (livePoints.isNotEmpty()) {
+                val baseDim = min(imgRect.width, imgRect.height)
+                val strokeW = (brushRadiusNorm * 2f * baseDim).coerceAtLeast(10f)
+                val color = if (currentMode == CleanupBrushMode.SURROUNDING_COLOR) AccentBlue.copy(alpha = 0.45f) else Color(customColorArgb)
+                if (livePoints.size == 1) {
+                    val p = livePoints.first()
                     drawCircle(color, radius = strokeW / 2f, center = Offset(imgRect.left + p.x * imgRect.width, imgRect.top + p.y * imgRect.height))
                 } else {
                     val path = Path().apply {
-                        moveTo(imgRect.left + pts.first().x * imgRect.width, imgRect.top + pts.first().y * imgRect.height)
-                        for (i in 1 until pts.size) {
-                            lineTo(imgRect.left + pts[i].x * imgRect.width, imgRect.top + pts[i].y * imgRect.height)
+                        moveTo(imgRect.left + livePoints.first().x * imgRect.width, imgRect.top + livePoints.first().y * imgRect.height)
+                        for (i in 1 until livePoints.size) {
+                            lineTo(imgRect.left + livePoints[i].x * imgRect.width, imgRect.top + livePoints[i].y * imgRect.height)
                         }
                     }
                     drawPath(path, color, style = Stroke(width = strokeW, cap = StrokeCap.Round, join = StrokeJoin.Round))
                 }
             }
-            strokes.forEach { drawStroke(it.points, it.brushRadiusNorm, it.mode, it.customColorArgb) }
-            if (livePoints.isNotEmpty()) drawStroke(livePoints, brushRadiusNorm, currentMode, customColorArgb)
         }
     }
 }
@@ -2163,6 +2195,21 @@ private fun InteractiveMarkupCanvas(
     }
 }
 
+private fun buildLiveColorFilter(brightness: Float, contrast: Float): ColorFilter {
+    val c = contrast.coerceIn(0.6f, 1.8f)
+    val b = brightness.coerceIn(-0.4f, 0.4f) * 255f
+    val translate = (-0.5f * c + 0.5f) * 255f + b
+    val matrix = ColorMatrix(
+        floatArrayOf(
+            c, 0f, 0f, 0f, translate,
+            0f, c, 0f, 0f, translate,
+            0f, 0f, c, 0f, translate,
+            0f, 0f, 0f, 1f, 0f
+        )
+    )
+    return ColorFilter.colorMatrix(matrix)
+}
+
 private fun computeFitRect(imgW: Float, imgH: Float, boxW: Float, boxH: Float): Rect {
     if (imgW <= 0f || imgH <= 0f || boxW <= 0f || boxH <= 0f) return Rect(0f, 0f, boxW, boxH)
     val scale = min(boxW / imgW, boxH / imgH)
@@ -2174,7 +2221,13 @@ private fun computeFitRect(imgW: Float, imgH: Float, boxW: Float, boxH: Float): 
 }
 
 @Composable
-private fun PagePreviewImage(path: String, revision: Int, modifier: Modifier = Modifier) {
+private fun PagePreviewImage(
+    path: String,
+    revision: Int,
+    liveRotationDeg: Float = 0f,
+    colorFilter: ColorFilter? = null,
+    modifier: Modifier = Modifier
+) {
     val bmp by produceState<Bitmap?>(initialValue = null, path, revision) {
         value = withContext(Dispatchers.IO) { decodeForUi(path, 1600) }
     }
@@ -2183,7 +2236,10 @@ private fun PagePreviewImage(path: String, revision: Int, modifier: Modifier = M
             bitmap = bmp!!.asImageBitmap(),
             contentDescription = "Scanned Page",
             contentScale = ContentScale.Fit,
-            modifier = modifier
+            colorFilter = colorFilter,
+            modifier = modifier.graphicsLayer {
+                rotationZ = liveRotationDeg
+            }
         )
     } else {
         CircularProgressIndicator(color = AccentBlue, modifier = Modifier.size(28.dp))

@@ -18,6 +18,8 @@ import org.opencv.core.Rect
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
+import com.offlinepdf.studio.core.imageprocessing.pipeline.DocumentQualityReport
+import com.offlinepdf.studio.core.imageprocessing.pipeline.Stage06To14EnhancementPipeline
 import org.opencv.photo.Photo
 import java.io.File
 import java.io.FileOutputStream
@@ -49,7 +51,12 @@ data class MarkupStroke(
 )
 
 @Singleton
-class OpenCvDocumentProcessor @Inject constructor() {
+class OpenCvDocumentProcessor @Inject constructor(
+    private val enhancementPipeline: Stage06To14EnhancementPipeline
+) {
+    @Volatile
+    var lastQualityReport: DocumentQualityReport? = null
+        private set
 
     fun normalizeExifOrientation(filePath: String, maxSide: Int = 3200): Boolean {
         val file = File(filePath)
@@ -195,24 +202,7 @@ class OpenCvDocumentProcessor @Inject constructor() {
                 }
             }
 
-            if (qualityMode == ScanQualityMode.HD) {
-                val rgb = Mat()
-                val denoised = Mat()
-                try {
-                    Imgproc.cvtColor(current, rgb, Imgproc.COLOR_RGBA2RGB)
-                    // Edge-preserving bilateral filter cleans sensor grain while keeping ink razor sharp
-                    Imgproc.bilateralFilter(rgb, denoised, 5, 28.0, 28.0)
-                    val sharp = sharpenMat(denoised, 0.32f)
-                    try {
-                        Imgproc.cvtColor(sharp, current, Imgproc.COLOR_RGB2RGBA)
-                    } finally {
-                        sharp.release()
-                    }
-                } finally {
-                    denoised.release()
-                    rgb.release()
-                }
-            }
+            // Preserve crisp raw ink strokes in HD mode (denoising & sharpening happen cleanly in Stages 10-12)
 
             saveMatAsJpeg(current, outputFile, jpegQuality)
             true
@@ -520,118 +510,90 @@ class OpenCvDocumentProcessor @Inject constructor() {
      * 3. Ink-only HSV saturation boost (makes blue/red/green handwriting vivid on pure snow-white paper).
      * 4. Crisp unsharp mask on ink edges.
      */
+    /**
+     * Samples the exact pixel color at normalized (x, y) from an image file (for Cleanup Eyedropper).
+     */
+    fun sampleColorAt(filePath: String, normX: Float, normY: Float): Int {
+        val bmp = decodeDownsampledBitmap(filePath, 1000) ?: return Color.WHITE
+        return try {
+            val px = (normX.coerceIn(0f, 1f) * (bmp.width - 1)).roundToInt()
+            val py = (normY.coerceIn(0f, 1f) * (bmp.height - 1)).roundToInt()
+            bmp.getPixel(px, py)
+        } finally {
+            bmp.recycle()
+        }
+    }
+
+    /**
+     * Physically reframes a scanned page onto a crisp white canvas matching the selected
+     * ExportPageSize & ExportOrientation so Resize produces an immediate, real visual & file change.
+     */
+    fun resizePageToAspect(
+        sourceFilePath: String,
+        outputFile: File,
+        pageSize: ExportPageSize,
+        orientation: ExportOrientation,
+        qualityMode: ScanQualityMode = ScanQualityMode.FAST
+    ): Boolean {
+        if (pageSize == ExportPageSize.ORIGINAL) return true
+        val maxSide = if (qualityMode == ScanQualityMode.HD) 2600 else 1800
+        val src = decodeDownsampledBitmap(sourceFilePath, maxSide) ?: return false
+        return try {
+            val (ptW, ptH) = ExportLayoutMath.resolvePageDimensionsPt(pageSize, orientation, src.width, src.height)
+            val aspect = ptW.toFloat() / ptH.coerceAtLeast(1).toFloat()
+            val outW: Int
+            val outH: Int
+            if (aspect >= 1f) {
+                outW = maxSide
+                outH = (maxSide / aspect).roundToInt().coerceAtLeast(400)
+            } else {
+                outH = maxSide
+                outW = (maxSide * aspect).roundToInt().coerceAtLeast(400)
+            }
+            val canvasBmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+            try {
+                val canvas = Canvas(canvasBmp)
+                canvas.drawColor(Color.WHITE)
+                val padX = (outW * 0.03f).roundToInt()
+                val padY = (outH * 0.03f).roundToInt()
+                val availW = (outW - padX * 2).coerceAtLeast(100)
+                val availH = (outH - padY * 2).coerceAtLeast(100)
+                val scale = min(availW.toFloat() / src.width, availH.toFloat() / src.height)
+                val dw = (src.width * scale).roundToInt()
+                val dh = (src.height * scale).roundToInt()
+                val left = (outW - dw) / 2
+                val top = (outH - dh) / 2
+                val dst = android.graphics.Rect(left, top, left + dw, top + dh)
+                canvas.drawBitmap(src, null, dst, Paint(Paint.FILTER_BITMAP_FLAG))
+                saveBitmapAsJpeg(canvasBmp, outputFile, if (qualityMode == ScanQualityMode.HD) 95 else 90)
+                true
+            } finally {
+                canvasBmp.recycle()
+            }
+        } finally {
+            src.recycle()
+        }
+    }
+
     private fun applyScannerAutoColor(
         rgb: Mat,
         whitePoint: Int = 216,
         bleedCutoff: Boolean = true,
         strongerInk: Boolean = false
     ): Mat {
-        val channels = mutableListOf<Mat>()
-        val normalized = mutableListOf<Mat>()
-        val merged = Mat()
-        val curved = Mat()
-        val hsv = Mat()
-        val hsvCh = mutableListOf<Mat>()
-        val hsvMerged = Mat()
-        val boosted = Mat()
-        val lut = buildScannerToneLut(whitePoint = whitePoint, bleedCutoff = bleedCutoff, strongerInk = strongerInk)
-
-        // Downscale factor for fast, ultra-smooth background illumination estimation
-        val bgScale = min(0.25, 360.0 / max(rgb.width(), rgb.height()).toDouble()).coerceAtLeast(0.08)
-        val bgW = max(16, (rgb.width() * bgScale).roundToInt())
-        val bgH = max(16, (rgb.height() * bgScale).roundToInt())
-        val dilateKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(13.0, 13.0))
-
-        return try {
-            Core.split(rgb, channels)
-            for (ch in channels) {
-                val small = Mat()
-                val dilated = Mat()
-                val blurred = Mat()
-                val bgFull = Mat()
-                val div = Mat()
-                try {
-                    Imgproc.resize(ch, small, Size(bgW.toDouble(), bgH.toDouble()), 0.0, 0.0, Imgproc.INTER_AREA)
-                    Imgproc.dilate(small, dilated, dilateKernel)
-                    Imgproc.GaussianBlur(dilated, blurred, Size(21.0, 21.0), 0.0)
-                    Imgproc.resize(blurred, bgFull, ch.size(), 0.0, 0.0, Imgproc.INTER_LINEAR)
-                    // Prevent division by zero on dark borders
-                    Core.max(bgFull, Scalar(18.0), bgFull)
-                    Core.divide(ch, bgFull, div, 255.0)
-                    normalized.add(div.clone())
-                } finally {
-                    div.release()
-                    bgFull.release()
-                    blurred.release()
-                    dilated.release()
-                    small.release()
-                }
-            }
-            Core.merge(normalized, merged)
-
-            // Apply white-point & bleed-through suppression LUT
-            Core.LUT(merged, lut, curved)
-
-            // Boost ink saturation ONLY where pixels are darker than white paper (V < 238)
-            Imgproc.cvtColor(curved, hsv, Imgproc.COLOR_RGB2HSV)
-            Core.split(hsv, hsvCh)
-            val inkMask = Mat()
-            val satBoosted = Mat()
-            try {
-                Imgproc.threshold(hsvCh[2], inkMask, 238.0, 255.0, Imgproc.THRESH_BINARY_INV)
-                hsvCh[1].convertTo(satBoosted, -1, if (strongerInk) 1.38 else 1.28, 0.0)
-                satBoosted.copyTo(hsvCh[1], inkMask)
-                // Clean any residual color cast on pure paper pixels (V >= 242 -> S = 0)
-                val paperMask = Mat()
-                try {
-                    Imgproc.threshold(hsvCh[2], paperMask, 242.0, 255.0, Imgproc.THRESH_BINARY)
-                    hsvCh[1].setTo(Scalar(0.0), paperMask)
-                } finally {
-                    paperMask.release()
-                }
-            } finally {
-                satBoosted.release()
-                inkMask.release()
-            }
-            Core.merge(hsvCh, hsvMerged)
-            Imgproc.cvtColor(hsvMerged, boosted, Imgproc.COLOR_HSV2RGB)
-
-            sharpenMat(boosted, if (strongerInk) 0.42f else 0.30f)
-        } finally {
-            lut.release()
-            dilateKernel.release()
-            channels.forEach { it.release() }
-            normalized.forEach { it.release() }
-            merged.release()
-            curved.release()
-            hsvCh.forEach { it.release() }
-            hsvMerged.release()
-            hsv.release()
-            boosted.release()
-        }
-    }
-
-    private fun buildScannerToneLut(whitePoint: Int, bleedCutoff: Boolean, strongerInk: Boolean): Mat {
-        val lut = Mat(1, 256, CvType.CV_8U)
-        val table = ByteArray(256)
-        val wp = whitePoint.coerceIn(185, 245).toDouble()
-        val bp = if (strongerInk) 28.0 else 16.0
-        val gamma = if (strongerInk) 1.32 else 1.18
-        for (i in 0..255) {
-            val outVal = when {
-                bleedCutoff && i >= wp -> 255.0
-                i <= bp -> 0.0
-                else -> {
-                    val norm = ((i - bp) / (wp - bp)).coerceIn(0.0, 1.0)
-                    // Smooth S-like ink-deepening curve while keeping bright paper clean
-                    val curved = norm.pow(gamma)
-                    (curved * 255.0).coerceIn(0.0, 255.0)
-                }
-            }
-            table[i] = outVal.roundToInt().coerceIn(0, 255).toByte()
-        }
-        lut.put(0, 0, table)
-        return lut
+        val wpOffset = if (strongerInk) 15f else 11f
+        val gamma = if (strongerInk) 1.56 else 1.46
+        val boost = if (strongerInk) 1.55f else 1.48f
+        val sharp = if (strongerInk) 0.42f else 0.34f
+        val output = enhancementPipeline.runAdaptiveAutoColour(
+            rgb = rgb,
+            whitePointOffset = wpOffset,
+            inkGamma = gamma,
+            chromaBoost = boost,
+            sharpAmount = sharp
+        )
+        lastQualityReport = output.qualityReport
+        return output.rgbMat
     }
 
     private fun applyNaturalColor(rgb: Mat): Mat {
