@@ -14,9 +14,17 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
+import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.min
+
+sealed interface ScanExportResult {
+    data class Success(val exportedPages: Int, val isZipArchive: Boolean = false) : ScanExportResult
+    data class Failure(val failedPageNumber: Int?, val reason: String) : ScanExportResult
+}
 
 object ExportLayoutMath {
     fun resolvePageDimensionsPt(
@@ -49,21 +57,37 @@ class ScanExportEngine @Inject constructor(
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) {
     /**
-     * Streams scanned pages incrementally from disk into a multi-page PDF (or single JPEG/PNG)
-     * written directly to the user-selected SAF [destinationUri]. Never keeps all full-res pages in RAM.
+     * Data-safe exporter:
+     * - PDF: Aborts immediately if ANY page is missing or corrupt (never silently omits a page).
+     * - JPEG/PNG with 1 page: Writes that image directly.
+     * - JPEG/PNG with multiple pages: Writes ALL pages into a ZIP archive so zero pages are lost!
      */
     suspend fun exportPages(
         pages: List<ScannedPageItem>,
         options: ExportOptions,
         destinationUri: Uri,
         onProgress: (current: Int, total: Int) -> Unit = { _, _ -> }
-    ): Boolean = withContext(ioDispatcher) {
-        if (pages.isEmpty()) return@withContext false
+    ): ScanExportResult = withContext(ioDispatcher) {
+        if (pages.isEmpty()) {
+            return@withContext ScanExportResult.Failure(null, "No pages to export.")
+        }
 
         when (options.format) {
             ExportFormat.PDF -> exportAsPdf(pages, options, destinationUri, onProgress)
-            ExportFormat.JPEG -> exportSingleImage(pages.first(), destinationUri, Bitmap.CompressFormat.JPEG, options.jpegQuality)
-            ExportFormat.PNG -> exportSingleImage(pages.first(), destinationUri, Bitmap.CompressFormat.PNG, 100)
+            ExportFormat.JPEG -> {
+                if (pages.size == 1) {
+                    exportSingleImage(pages.first(), destinationUri, Bitmap.CompressFormat.JPEG, options.jpegQuality)
+                } else {
+                    exportImagesAsZip(pages, destinationUri, Bitmap.CompressFormat.JPEG, "jpg", options.jpegQuality, onProgress)
+                }
+            }
+            ExportFormat.PNG -> {
+                if (pages.size == 1) {
+                    exportSingleImage(pages.first(), destinationUri, Bitmap.CompressFormat.PNG, 100)
+                } else {
+                    exportImagesAsZip(pages, destinationUri, Bitmap.CompressFormat.PNG, "png", 100, onProgress)
+                }
+            }
         }
     }
 
@@ -72,14 +96,59 @@ class ScanExportEngine @Inject constructor(
         destinationUri: Uri,
         format: Bitmap.CompressFormat,
         quality: Int
-    ): Boolean {
-        val bmp = processor.decodeDownsampledBitmap(page.enhancedImagePath, maxSide = 2400) ?: return false
+    ): ScanExportResult {
+        val bmp = processor.decodeDownsampledBitmap(page.enhancedImagePath, maxSide = 2600)
+            ?: return ScanExportResult.Failure(1, "Page #1 could not be decoded. Originals preserved.")
         return try {
-            context.contentResolver.openOutputStream(destinationUri)?.use { out ->
+            val wrote = context.contentResolver.openOutputStream(destinationUri)?.use { out ->
                 bmp.compress(format, quality.coerceIn(40, 100), out)
             } ?: false
+            if (wrote) ScanExportResult.Success(1, isZipArchive = false)
+            else ScanExportResult.Failure(1, "Could not write output file.")
+        } catch (t: Throwable) {
+            ScanExportResult.Failure(1, t.localizedMessage ?: "Failed to write image.")
         } finally {
             bmp.recycle()
+        }
+    }
+
+    private fun exportImagesAsZip(
+        pages: List<ScannedPageItem>,
+        destinationUri: Uri,
+        format: Bitmap.CompressFormat,
+        ext: String,
+        quality: Int,
+        onProgress: (Int, Int) -> Unit
+    ): ScanExportResult {
+        return try {
+            val outStream = context.contentResolver.openOutputStream(destinationUri)
+                ?: return ScanExportResult.Failure(null, "Could not open destination file.")
+
+            ZipOutputStream(outStream).use { zos ->
+                pages.forEachIndexed { idx, item ->
+                    val pageNum = idx + 1
+                    onProgress(pageNum, pages.size)
+                    val bmp = processor.decodeDownsampledBitmap(item.enhancedImagePath, maxSide = 2400)
+                        ?: return ScanExportResult.Failure(
+                            pageNum,
+                            "Export aborted: Page #$pageNum could not be read. All originals preserved."
+                        )
+                    try {
+                        val entryName = String.format(Locale.US, "Page_%03d.%s", pageNum, ext)
+                        zos.putNextEntry(ZipEntry(entryName))
+                        val ok = bmp.compress(format, quality.coerceIn(40, 100), zos)
+                        zos.closeEntry()
+                        if (!ok) {
+                            return ScanExportResult.Failure(pageNum, "Failed to encode Page #$pageNum.")
+                        }
+                    } finally {
+                        bmp.recycle()
+                    }
+                }
+            }
+            ScanExportResult.Success(pages.size, isZipArchive = true)
+        } catch (t: Throwable) {
+            ScanExportResult.Failure(null, t.localizedMessage ?: "ZIP export failed. Originals preserved.")
         }
     }
 
@@ -88,17 +157,20 @@ class ScanExportEngine @Inject constructor(
         options: ExportOptions,
         destinationUri: Uri,
         onProgress: (Int, Int) -> Unit
-    ): Boolean {
+    ): ScanExportResult {
         val pdfDocument = PdfDocument()
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
         return try {
             pages.forEachIndexed { index, item ->
-                onProgress(index + 1, pages.size)
+                val pageNum = index + 1
+                onProgress(pageNum, pages.size)
                 val rawBmp = processor.decodeDownsampledBitmap(item.enhancedImagePath, maxSide = 2000)
-                    ?: return@forEachIndexed
+                    ?: return ScanExportResult.Failure(
+                        pageNum,
+                        "Export aborted: Page #$pageNum is missing or unreadable. All originals preserved."
+                    )
 
-                // Apply requested JPEG quality compression before embedding so file size honors quality slider
                 val compressedBmp = recompressIfNeeded(rawBmp, options.jpegQuality)
                 if (compressedBmp !== rawBmp) rawBmp.recycle()
 
@@ -109,7 +181,7 @@ class ScanExportEngine @Inject constructor(
                         imageWidthPx = compressedBmp.width,
                         imageHeightPx = compressedBmp.height
                     )
-                    val pageInfo = PdfDocument.PageInfo.Builder(pageW, pageH, index + 1).create()
+                    val pageInfo = PdfDocument.PageInfo.Builder(pageW, pageH, pageNum).create()
                     val page = pdfDocument.startPage(pageInfo)
                     val canvas: Canvas = page.canvas
                     canvas.drawColor(Color.WHITE)
@@ -137,10 +209,10 @@ class ScanExportEngine @Inject constructor(
 
             context.contentResolver.openOutputStream(destinationUri)?.use { out ->
                 pdfDocument.writeTo(out)
-                true
-            } ?: false
-        } catch (_: Throwable) {
-            false
+                ScanExportResult.Success(pages.size, isZipArchive = false)
+            } ?: ScanExportResult.Failure(null, "Unable to open output stream for PDF.")
+        } catch (t: Throwable) {
+            ScanExportResult.Failure(null, t.localizedMessage ?: "PDF export failed. Originals preserved.")
         } finally {
             pdfDocument.close()
         }

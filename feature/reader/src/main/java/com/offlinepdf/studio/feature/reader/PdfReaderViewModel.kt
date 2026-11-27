@@ -72,6 +72,8 @@ class PdfReaderViewModel @Inject constructor(
     private var activeHandle: PdfDocumentHandle? = null
     private var activeUriString: String? = null
     private var searchJob: Job? = null
+    private var prefetchJob: Job? = null
+    private var lastScrollPage: Int = 0
 
     fun openUri(uriString: String) {
         if (activeUriString == uriString && activeHandle != null) return
@@ -191,6 +193,62 @@ class PdfReaderViewModel @Inject constructor(
         }
     }
 
+
+    /**
+     * Directional predictive pre-rendering scheduler:
+     * Prioritizes next 2 pages in scroll direction + previous 1 page in background,
+     * cancelling obsolete jobs immediately when the user scrolls fast.
+     */
+    fun schedulePredictivePrefetch(currentPage: Int, crispWidthPx: Int) {
+        val handle = activeHandle ?: return
+        val total = _uiState.value.pageCount
+        if (total <= 1) return
+
+        val scrollingForward = currentPage >= lastScrollPage
+        lastScrollPage = currentPage
+
+        val targets = if (scrollingForward) {
+            listOf(currentPage + 1, currentPage + 2, currentPage - 1)
+        } else {
+            listOf(currentPage - 1, currentPage - 2, currentPage + 1)
+        }.filter { it in 0 until total }
+
+        prefetchJob?.cancel()
+        prefetchJob = viewModelScope.launch(ioDispatcher) {
+            val invert = _uiState.value.canvasTheme == ReadingCanvasTheme.NIGHT_INVERTED
+            for (idx in targets) {
+                runCatching {
+                    handle.renderPage(idx, crispWidthPx, rotationDegrees = 0, invertColors = invert)
+                }
+            }
+        }
+    }
+
+    suspend fun renderHighZoomTile(
+        pageIndex: Int,
+        leftNorm: Float,
+        topNorm: Float,
+        rightNorm: Float,
+        bottomNorm: Float,
+        zoomedFullPageWidthPx: Int
+    ): Bitmap? {
+        val handle = activeHandle ?: return null
+        val invert = _uiState.value.canvasTheme == ReadingCanvasTheme.NIGHT_INVERTED
+        return withContext(ioDispatcher) {
+            runCatching {
+                handle.renderRegion(
+                    pageIndex = pageIndex,
+                    leftNorm = leftNorm,
+                    topNorm = topNorm,
+                    rightNorm = rightNorm,
+                    bottomNorm = bottomNorm,
+                    zoomedFullPageWidthPx = zoomedFullPageWidthPx,
+                    invertColors = invert
+                )
+            }.getOrNull()
+        }
+    }
+
     fun onPageChanged(pageIndex: Int) {
         val uri = activeUriString ?: return
         val total = _uiState.value.pageCount
@@ -266,6 +324,7 @@ class PdfReaderViewModel @Inject constructor(
     fun searchText(query: String, onFirstMatchPage: (Int) -> Unit = {}) {
         val handle = activeHandle ?: return
         searchJob?.cancel()
+        prefetchJob?.cancel()
         _uiState.update { it.copy(searchQuery = query, isSearching = query.isNotBlank()) }
         if (query.isBlank()) {
             _uiState.update { it.copy(searchHits = emptyList(), activeHitIndex = -1, isSearching = false) }
@@ -293,6 +352,7 @@ class PdfReaderViewModel @Inject constructor(
 
     fun clearSearch() {
         searchJob?.cancel()
+        prefetchJob?.cancel()
         _uiState.update {
             it.copy(searchQuery = "", searchHits = emptyList(), activeHitIndex = -1, isSearching = false)
         }
@@ -324,6 +384,7 @@ class PdfReaderViewModel @Inject constructor(
 
     private fun closeHandle() {
         searchJob?.cancel()
+        prefetchJob?.cancel()
         runCatching { activeHandle?.close() }
         activeHandle = null
     }

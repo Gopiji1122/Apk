@@ -6,13 +6,17 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.offlinepdf.studio.core.common.IoDispatcher
+import com.offlinepdf.studio.core.database.ScanSessionDao
+import com.offlinepdf.studio.core.database.ScanSessionPageEntity
 import com.offlinepdf.studio.core.imageprocessing.CustomAdjustments
 import com.offlinepdf.studio.core.imageprocessing.DocumentEdgeDetector
 import com.offlinepdf.studio.core.imageprocessing.DocumentQuad
 import com.offlinepdf.studio.core.imageprocessing.ExportFormat
 import com.offlinepdf.studio.core.imageprocessing.ExportOptions
+import com.offlinepdf.studio.core.imageprocessing.NormalizedPoint
 import com.offlinepdf.studio.core.imageprocessing.OpenCvDocumentProcessor
 import com.offlinepdf.studio.core.imageprocessing.ScanExportEngine
+import com.offlinepdf.studio.core.imageprocessing.ScanExportResult
 import com.offlinepdf.studio.core.imageprocessing.ScanFilterMode
 import com.offlinepdf.studio.core.imageprocessing.ScanQualityMode
 import com.offlinepdf.studio.core.imageprocessing.ScannedPageItem
@@ -69,14 +73,91 @@ class ScannerViewModel @Inject constructor(
     private val processor: OpenCvDocumentProcessor,
     private val exportEngine: ScanExportEngine,
     private val storageRepository: SafDocumentRepository,
+    private val scanSessionDao: ScanSessionDao,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ScannerUiState())
     val uiState: StateFlow<ScannerUiState> = _uiState.asStateFlow()
 
+    // Persistent app-private storage (NOT cacheDir) so Android never wipes unsaved scans!
     private val sessionDir: File by lazy {
-        File(context.cacheDir, "scanner_session").apply { mkdirs() }
+        File(context.filesDir, "scanner_active_session").apply { mkdirs() }
+    }
+
+    init {
+        restoreSavedSession()
+    }
+
+    private fun restoreSavedSession() {
+        viewModelScope.launch(ioDispatcher) {
+            val saved = runCatching { scanSessionDao.getAllOrdered() }.getOrDefault(emptyList())
+            val valid = saved.mapNotNull { entity ->
+                val rawExists = File(entity.rawImagePath).exists()
+                val enhExists = File(entity.enhancedImagePath).exists()
+                if (!rawExists || !enhExists) return@mapNotNull null
+                val filter = runCatching { ScanFilterMode.valueOf(entity.filterModeName) }
+                    .getOrDefault(ScanFilterMode.AUTO_COLOR)
+                ScannedPageItem(
+                    id = entity.id,
+                    rawImagePath = entity.rawImagePath,
+                    warpedImagePath = entity.warpedImagePath,
+                    enhancedImagePath = entity.enhancedImagePath,
+                    quad = DocumentQuad(
+                        NormalizedPoint(entity.tlX, entity.tlY),
+                        NormalizedPoint(entity.trX, entity.trY),
+                        NormalizedPoint(entity.brX, entity.brY),
+                        NormalizedPoint(entity.blX, entity.blY)
+                    ),
+                    rotationDegrees = entity.rotationDegrees,
+                    fineRotationDegrees = entity.fineRotationDegrees,
+                    filterMode = filter,
+                    customAdjustments = CustomAdjustments(
+                        entity.brightness, entity.contrast, entity.saturation, entity.sharpness
+                    )
+                )
+            }
+            if (valid.isNotEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        pages = valid,
+                        activePageIndex = valid.lastIndex,
+                        statusMessage = "Recovered ${valid.size} unsaved scanned page(s)"
+                    )
+                }
+            }
+        }
+    }
+
+    private fun persistSessionSnapshot(pages: List<ScannedPageItem>) {
+        viewModelScope.launch(ioDispatcher) {
+            runCatching {
+                scanSessionDao.clearAll()
+                if (pages.isNotEmpty()) {
+                    val entities = pages.mapIndexed { idx, p ->
+                        ScanSessionPageEntity(
+                            id = p.id,
+                            orderIndex = idx,
+                            rawImagePath = p.rawImagePath,
+                            warpedImagePath = p.warpedImagePath,
+                            enhancedImagePath = p.enhancedImagePath,
+                            tlX = p.quad.topLeft.x, tlY = p.quad.topLeft.y,
+                            trX = p.quad.topRight.x, trY = p.quad.topRight.y,
+                            brX = p.quad.bottomRight.x, brY = p.quad.bottomRight.y,
+                            blX = p.quad.bottomLeft.x, blY = p.quad.bottomLeft.y,
+                            rotationDegrees = p.rotationDegrees,
+                            fineRotationDegrees = p.fineRotationDegrees,
+                            filterModeName = p.filterMode.name,
+                            brightness = p.customAdjustments.brightness,
+                            contrast = p.customAdjustments.contrast,
+                            saturation = p.customAdjustments.saturation,
+                            sharpness = p.customAdjustments.sharpness
+                        )
+                    }
+                    scanSessionDao.upsertAll(entities)
+                }
+            }
+        }
     }
 
     fun createCaptureTempFile(): File {
@@ -111,7 +192,6 @@ class ScannerViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isProcessing = true, processingMessage = "Preparing upright scan...") }
             val pageItem = withContext(ioDispatcher) {
-                // Fix #9: Bake EXIF orientation into the raw file immediately so portrait stays portrait!
                 processor.normalizeExifOrientation(rawFile.absolutePath, maxSide = qMode.maxProcessSide)
 
                 val id = UUID.randomUUID().toString().take(12)
@@ -137,8 +217,8 @@ class ScannerViewModel @Inject constructor(
                 )
             }
 
+            val updated = _uiState.value.pages + pageItem
             _uiState.update { state ->
-                val updated = state.pages + pageItem
                 state.copy(
                     pages = updated,
                     activePageIndex = updated.lastIndex,
@@ -148,6 +228,7 @@ class ScannerViewModel @Inject constructor(
                     previewRevision = state.previewRevision + 1
                 )
             }
+            persistSessionSnapshot(updated)
         }
     }
 
@@ -188,8 +269,8 @@ class ScannerViewModel @Inject constructor(
                 }
             }
 
+            val updated = _uiState.value.pages + imported
             _uiState.update { state ->
-                val updated = state.pages + imported
                 state.copy(
                     pages = updated,
                     activePageIndex = updated.lastIndex.coerceAtLeast(0),
@@ -199,15 +280,16 @@ class ScannerViewModel @Inject constructor(
                     previewRevision = state.previewRevision + 1
                 )
             }
+            persistSessionSnapshot(updated)
         }
     }
 
     fun updateActiveQuad(quad: DocumentQuad) {
-        updateActivePage { it.copy(quad = quad) }
+        updateActivePage(persist = false) { it.copy(quad = quad) }
     }
 
     fun resetActiveQuad() {
-        updateActivePage { it.copy(quad = DocumentQuad.fullFrame(0.03f), fineRotationDegrees = 0f) }
+        updateActivePage(persist = true) { it.copy(quad = DocumentQuad.fullFrame(0.03f), fineRotationDegrees = 0f) }
     }
 
     fun autoDetectActiveQuad() {
@@ -219,14 +301,10 @@ class ScannerViewModel @Inject constructor(
                 bmp?.recycle()
                 q ?: DocumentQuad.fullFrame()
             }
-            updateActivePage { it.copy(quad = detected) }
+            updateActivePage(persist = true) { it.copy(quad = detected) }
         }
     }
 
-    /**
-     * Physically rotates the raw capture 90° clockwise and rotates the quad to match,
-     * giving instant, zero-stretch visual feedback on the Crop screen!
-     */
     fun rotateActivePage90() {
         val active = _uiState.value.activePage ?: return
         val qMode = _uiState.value.qualityMode
@@ -235,7 +313,7 @@ class ScannerViewModel @Inject constructor(
             withContext(ioDispatcher) {
                 processor.rotateFile90Clockwise(active.rawImagePath, maxSide = qMode.maxProcessSide)
             }
-            updateActivePage { it.copy(quad = it.quad.rotated90Clockwise()) }
+            updateActivePage(persist = true) { it.copy(quad = it.quad.rotated90Clockwise()) }
             _uiState.update {
                 it.copy(
                     isProcessing = false,
@@ -247,7 +325,7 @@ class ScannerViewModel @Inject constructor(
     }
 
     fun setActiveFineRotation(degrees: Float) {
-        updateActivePage { it.copy(fineRotationDegrees = degrees.coerceIn(-15f, 15f)) }
+        updateActivePage(persist = false) { it.copy(fineRotationDegrees = degrees.coerceIn(-15f, 15f)) }
     }
 
     fun applyCropAndProceedToEnhance() {
@@ -272,6 +350,7 @@ class ScannerViewModel @Inject constructor(
                     qualityMode = qMode
                 )
             }
+            persistSessionSnapshot(_uiState.value.pages)
             _uiState.update {
                 it.copy(
                     stage = ScannerStage.ENHANCE,
@@ -285,14 +364,14 @@ class ScannerViewModel @Inject constructor(
 
     fun setActiveFilter(mode: ScanFilterMode) {
         val active = _uiState.value.activePage ?: return
-        updateActivePage { it.copy(filterMode = mode) }
+        updateActivePage(persist = true) { it.copy(filterMode = mode) }
         reprocessEnhanced(active.copy(filterMode = mode))
     }
 
     fun setActiveCustomAdjustments(custom: CustomAdjustments) {
         val active = _uiState.value.activePage ?: return
         val updated = active.copy(filterMode = ScanFilterMode.CUSTOM, customAdjustments = custom)
-        updateActivePage { updated }
+        updateActivePage(persist = true) { updated }
         reprocessEnhanced(updated)
     }
 
@@ -345,6 +424,7 @@ class ScannerViewModel @Inject constructor(
                     previewRevision = it.previewRevision + 1
                 )
             }
+            persistSessionSnapshot(updatedPages)
         }
     }
 
@@ -378,24 +458,23 @@ class ScannerViewModel @Inject constructor(
                     enhancedImagePath = enhCopy.absolutePath
                 )
             }
+            val list = _uiState.value.pages.toMutableList()
+            list.add((index + 1).coerceAtMost(list.size), copyItem)
             _uiState.update { state ->
-                val list = state.pages.toMutableList()
-                list.add((index + 1).coerceAtMost(list.size), copyItem)
                 state.copy(pages = list, previewRevision = state.previewRevision + 1)
             }
+            persistSessionSnapshot(list)
         }
     }
 
     fun movePage(fromIndex: Int, toIndex: Int) {
-        _uiState.update { state ->
-            if (fromIndex !in state.pages.indices || toIndex !in state.pages.indices || fromIndex == toIndex) {
-                return@update state
-            }
-            val list = state.pages.toMutableList()
-            val moved = list.removeAt(fromIndex)
-            list.add(toIndex, moved)
-            state.copy(pages = list, activePageIndex = toIndex)
-        }
+        val cur = _uiState.value.pages
+        if (fromIndex !in cur.indices || toIndex !in cur.indices || fromIndex == toIndex) return
+        val list = cur.toMutableList()
+        val moved = list.removeAt(fromIndex)
+        list.add(toIndex, moved)
+        _uiState.update { it.copy(pages = list, activePageIndex = toIndex) }
+        persistSessionSnapshot(list)
     }
 
     fun rotatePageInQueue(index: Int) {
@@ -408,18 +487,19 @@ class ScannerViewModel @Inject constructor(
                 processor.rotateFile90Clockwise(page.warpedImagePath, maxSide = qMode.maxProcessSide)
                 processor.rotateFile90Clockwise(page.enhancedImagePath, maxSide = qMode.maxProcessSide)
             }
-            _uiState.update { state ->
-                val list = state.pages.toMutableList()
-                if (index in list.indices) {
-                    list[index] = list[index].copy(quad = list[index].quad.rotated90Clockwise())
-                }
-                state.copy(
+            val list = _uiState.value.pages.toMutableList()
+            if (index in list.indices) {
+                list[index] = list[index].copy(quad = list[index].quad.rotated90Clockwise())
+            }
+            _uiState.update {
+                it.copy(
                     pages = list,
                     isProcessing = false,
                     processingMessage = "",
-                    previewRevision = state.previewRevision + 1
+                    previewRevision = it.previewRevision + 1
                 )
             }
+            persistSessionSnapshot(list)
         }
     }
 
@@ -430,12 +510,13 @@ class ScannerViewModel @Inject constructor(
             File(removed.warpedImagePath).delete()
             File(removed.enhancedImagePath).delete()
         }
+        val list = _uiState.value.pages.toMutableList().apply { removeAt(index) }
         _uiState.update { state ->
-            val list = state.pages.toMutableList().apply { removeAt(index) }
             val nextIdx = state.activePageIndex.coerceAtMost((list.size - 1).coerceAtLeast(0))
             val nextStage = if (list.isEmpty()) ScannerStage.CAMERA else state.stage
             state.copy(pages = list, activePageIndex = nextIdx, stage = nextStage)
         }
+        persistSessionSnapshot(list)
     }
 
     fun updateExportOptions(options: ExportOptions) {
@@ -448,8 +529,8 @@ class ScannerViewModel @Inject constructor(
         if (pages.isEmpty()) return
 
         viewModelScope.launch {
-            _uiState.update { it.copy(isProcessing = true, exportProgress = 0 to pages.size) }
-            val success = exportEngine.exportPages(
+            _uiState.update { it.copy(isProcessing = true, processingMessage = "Exporting...", exportProgress = 0 to pages.size) }
+            val result = exportEngine.exportPages(
                 pages = pages,
                 options = options,
                 destinationUri = destinationUri,
@@ -458,34 +539,47 @@ class ScannerViewModel @Inject constructor(
                 }
             )
 
-            if (success) {
-                var exportedPdfUri: String? = null
-                if (options.format == ExportFormat.PDF) {
-                    val fileName = "${options.title.ifBlank { "Scanned_Document" }}.pdf"
-                    storageRepository.registerScannedPdf(destinationUri, fileName, pages.size)
-                    exportedPdfUri = destinationUri.toString()
+            when (result) {
+                is ScanExportResult.Success -> {
+                    var exportedPdfUri: String? = null
+                    if (options.format == ExportFormat.PDF) {
+                        val fileName = "${options.title.ifBlank { "Scanned_Document" }}.pdf"
+                        storageRepository.registerScannedPdf(destinationUri, fileName, pages.size)
+                        exportedPdfUri = destinationUri.toString()
+                    }
+                    // Only clear session after ALL pages are verified exported!
+                    withContext(ioDispatcher) {
+                        scanSessionDao.clearAll()
+                        sessionDir.listFiles()?.forEach { it.delete() }
+                    }
+                    val msg = if (result.isZipArchive) {
+                        "Exported all ${result.exportedPages} images as ZIP!"
+                    } else {
+                        "Exported ${result.exportedPages} page(s) successfully!"
+                    }
+                    _uiState.update {
+                        it.copy(
+                            pages = emptyList(),
+                            activePageIndex = 0,
+                            stage = ScannerStage.CAMERA,
+                            isProcessing = false,
+                            processingMessage = "",
+                            exportProgress = null,
+                            lastExportedPdfUri = exportedPdfUri,
+                            statusMessage = msg
+                        )
+                    }
                 }
-                withContext(ioDispatcher) {
-                    sessionDir.listFiles()?.forEach { it.delete() }
-                }
-                _uiState.update {
-                    it.copy(
-                        pages = emptyList(),
-                        activePageIndex = 0,
-                        stage = ScannerStage.CAMERA,
-                        isProcessing = false,
-                        exportProgress = null,
-                        lastExportedPdfUri = exportedPdfUri,
-                        statusMessage = "Exported ${options.format.displayName} successfully!"
-                    )
-                }
-            } else {
-                _uiState.update {
-                    it.copy(
-                        isProcessing = false,
-                        exportProgress = null,
-                        statusMessage = "Export failed. Your scanned pages are preserved."
-                    )
+                is ScanExportResult.Failure -> {
+                    // Preserve 100% of originals on any failure!
+                    _uiState.update {
+                        it.copy(
+                            isProcessing = false,
+                            processingMessage = "",
+                            exportProgress = null,
+                            statusMessage = result.reason
+                        )
+                    }
                 }
             }
         }
@@ -502,13 +596,13 @@ class ScannerViewModel @Inject constructor(
         _uiState.update { it.copy(lastExportedPdfUri = null) }
     }
 
-    private fun updateActivePage(transform: (ScannedPageItem) -> ScannedPageItem) {
-        _uiState.update { state ->
-            val idx = state.activePageIndex
-            if (idx !in state.pages.indices) return@update state
-            val list = state.pages.toMutableList()
-            list[idx] = transform(list[idx])
-            state.copy(pages = list)
-        }
+    private fun updateActivePage(persist: Boolean, transform: (ScannedPageItem) -> ScannedPageItem) {
+        val state = _uiState.value
+        val idx = state.activePageIndex
+        if (idx !in state.pages.indices) return
+        val list = state.pages.toMutableList()
+        list[idx] = transform(list[idx])
+        _uiState.update { it.copy(pages = list) }
+        if (persist) persistSessionSnapshot(list)
     }
 }

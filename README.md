@@ -1,20 +1,12 @@
-# Offline PDF Studio (Phase 2 — Professional PDF Reader)
+# Offline PDF Studio (Phase 3.5 — Hardened Reader & Offline Scanner)
 
-A private, 100% offline, modular Android PDF Editor & Document Scanner built with **Kotlin**, **Jetpack Compose (Material 3)**, **Clean Architecture + MVVM**, **Hilt**, **Room**, **DataStore**, **Android Storage Access Framework**, and **MuPDF (`com.artifex.mupdf:fitz:1.28.5`)**.
+A private, 100% offline, modular Android PDF Editor & Document Scanner built with **Kotlin**, **Jetpack Compose (Material 3)**, **Clean Architecture + MVVM**, **Hilt**, **Room**, **DataStore**, **CameraX 1.4.2**, **OpenCV 4.12.0**, and **MuPDF 1.28.5**.
 
-## Phase 2 Completed Features
-- **Phase 1 Foundation**: 12-module architecture, Material 3 themes, English + Hindi localization, SAF File Manager, Room/DataStore persistence, MuPDF JNI engine.
-- **Phase 2 Professional PDF Reader**:
-  - Continuous Vertical, Single-Page Horizontal (`HorizontalPager`), and Two-Page Spread layouts
-  - Fit Width, Fit Page, and Actual Size (100%) zoom presets + pinch-to-zoom + double-tap zoom
-  - Tap-to-toggle full-screen immersive reading controls
-  - Real search result highlighting drawn on PDF pages (rotation-aware normalized `Quad` boxes) + Previous/Next match navigation
-  - Lazily rendered Page Thumbnails grid sheet (separate thumbnail `LruCache`)
-  - Bookmarks manager sheet + Table of Contents (PDF Outline) sheet + Go-to-Page dialog
-  - Selectable & copyable page text via MuPDF `StructuredText`
-  - Light, Dark Canvas, and Night Inverted reading modes + 90° rotation + auto-resume last reading position
+## Completed Through Phase 3.5
+- **Phase 1 Foundation:** 13-module Gradle architecture, Light/Dark/System themes, English + Hindi UI, SAF File Manager, custom adaptive vector app icon, zero internet/tracking permissions.
+- **Phase 2 & 3.5 Smooth Tiled PDF Viewer:** Google Drive–style minimalist full-screen reader, floating frosted header with inline search & match navigation, slim right-edge vertical scrubber, coordinated single-state-machine page renderer, directional predictive pre-rendering (next 2 + prev 1), and high-zoom MuPDF tile rendering (`renderRegion`) for crisp 7× Hindi & diagram zoom.
+- **Phase 3 & 3.5 Hardened Document Scanner:** CameraX `640×480` low-CPU analysis + OpenCV Laplacian blur & exposure checks, smooth Adobe Scan–style Auto-Capture, direct 2-finger pinch-to-zoom, Fast/HD quality toggle, EXIF upright normalization, interactive 4-corner crop with live magnifier loupe, custom **Curved Protractor Rotation Dial**, all 10 OpenCV enhancement modes, persistent Room + `filesDir` crash-safe session recovery, abort-on-corrupt-page PDF export, and multi-page JPEG/PNG ZIP export.
 
-## Upcoming Phases (Honestly Labeled in UI)
-- **Phase 3**: CameraX + OpenCV Document Scanner (auto edge detection, stability capture, 4-point crop, 10 filters, unlimited pages)
-- **Phase 4**: Tesseract4Android Offline OCR (English + Hindi Devanagari, searchable PDF, TXT export)
-- **Phases 5–9**: Annotations, Content Editor, Page Organizer, Forms/Signatures, Compression, Security & True Redaction
+## Upcoming Phases
+- **Phase 4:** Tesseract4Android Offline English & Hindi (Devanagari) OCR + Searchable PDF + TXT export.
+- **Phases 5–9:** Annotations, Content Editor, Page Organizer (Merge/Split), Forms & Signatures, Compression, Watermark, Passwords & True Redaction.

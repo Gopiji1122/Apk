@@ -83,6 +83,15 @@ interface PdfDocumentHandle : AutoCloseable {
         invertColors: Boolean = false
     ): Bitmap
     fun renderThumbnail(pageIndex: Int, targetWidthPx: Int = 220): Bitmap
+    fun renderRegion(
+        pageIndex: Int,
+        leftNorm: Float,
+        topNorm: Float,
+        rightNorm: Float,
+        bottomNorm: Float,
+        zoomedFullPageWidthPx: Int,
+        invertColors: Boolean = false
+    ): Bitmap
     fun searchPage(pageIndex: Int, query: String): PdfSearchHit?
     fun extractPageText(pageIndex: Int): String
 }

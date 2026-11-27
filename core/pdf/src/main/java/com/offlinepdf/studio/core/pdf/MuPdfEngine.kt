@@ -165,6 +165,58 @@ class MuPdfDocumentHandle(
         return rendered
     }
 
+
+    /**
+     * High-zoom tile renderer using MuPDF's AndroidDrawDevice(bitmap, patchX, patchY):
+     * Renders ONLY the visible zoomed sub-rectangle at full vector sharpness (up to 7x zoom)
+     * without allocating an enormous full-page bitmap.
+     */
+    override fun renderRegion(
+        pageIndex: Int,
+        leftNorm: Float,
+        topNorm: Float,
+        rightNorm: Float,
+        bottomNorm: Float,
+        zoomedFullPageWidthPx: Int,
+        invertColors: Boolean
+    ): Bitmap = synchronized(lock) {
+        check(!closed) { "Document is closed" }
+        val page = document.loadPage(pageIndex)
+        try {
+            val bounds = page.bounds
+            val pageW = max(1f, bounds.x1 - bounds.x0)
+            val pageH = max(1f, bounds.y1 - bounds.y0)
+            val fullW = zoomedFullPageWidthPx.coerceIn(720, 7600)
+            val scale = fullW.toFloat() / pageW
+            val fullH = (pageH * scale).toInt().coerceAtLeast(1)
+
+            val l = leftNorm.coerceIn(0f, 0.99f)
+            val t = topNorm.coerceIn(0f, 0.99f)
+            val r = rightNorm.coerceIn(l + 0.01f, 1f)
+            val b = bottomNorm.coerceIn(t + 0.01f, 1f)
+
+            val patchX = (l * fullW).toInt()
+            val patchY = (t * fullH).toInt()
+            val tileW = ((r - l) * fullW).toInt().coerceIn(64, 1800)
+            val tileH = ((b - t) * fullH).toInt().coerceIn(64, 2200)
+
+            val tileBmp = Bitmap.createBitmap(tileW, tileH, Bitmap.Config.ARGB_8888)
+            tileBmp.eraseColor(android.graphics.Color.WHITE)
+
+            val ctm = Matrix(scale, scale)
+            val dev = AndroidDrawDevice(tileBmp, patchX, patchY)
+            try {
+                page.run(dev, ctm, null)
+                dev.close()
+            } finally {
+                dev.destroy()
+            }
+            if (invertColors) applyNightInversion(tileBmp) else tileBmp
+        } finally {
+            page.destroy()
+        }
+    }
+
     override fun renderThumbnail(pageIndex: Int, targetWidthPx: Int): Bitmap {
         val safeWidth = targetWidthPx.coerceIn(96, 360)
         val cacheKey = "thumb_${pageIndex}_${safeWidth}"

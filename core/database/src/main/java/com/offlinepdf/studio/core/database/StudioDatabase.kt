@@ -12,12 +12,13 @@ import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
 @Database(
-    entities = [DocumentEntity::class, BookmarkEntity::class],
-    version = 1,
+    entities = [DocumentEntity::class, BookmarkEntity::class, ScanSessionPageEntity::class],
+    version = 2,
     exportSchema = false
 )
 abstract class StudioDatabase : RoomDatabase() {
     abstract fun documentDao(): DocumentDao
+    abstract fun scanSessionDao(): ScanSessionDao
 }
 
 @Module
@@ -32,4 +33,7 @@ object DatabaseModule {
 
     @Provides
     fun provideDocumentDao(db: StudioDatabase): DocumentDao = db.documentDao()
+
+    @Provides
+    fun provideScanSessionDao(db: StudioDatabase): ScanSessionDao = db.scanSessionDao()
 }

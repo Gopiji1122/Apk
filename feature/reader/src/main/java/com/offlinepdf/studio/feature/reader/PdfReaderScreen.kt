@@ -210,9 +210,14 @@ fun PdfReaderScreen(
         }
     }
 
+    val prefetchWidthPx = with(LocalDensity.current) {
+        (LocalConfiguration.current.screenWidthDp.dp.toPx() * 1.45f).toInt().coerceIn(800, 1600)
+    }
     LaunchedEffect(listState.firstVisibleItemIndex, state.pageCount) {
         if (state.pageCount > 0) {
-            viewModel.onPageChanged(listState.firstVisibleItemIndex)
+            val idx = listState.firstVisibleItemIndex
+            viewModel.onPageChanged(idx)
+            viewModel.schedulePredictivePrefetch(idx, prefetchWidthPx)
         }
     }
 
@@ -346,11 +351,15 @@ fun PdfReaderScreen(
                                 pageIndex = pageIndex,
                                 fastWidthPx = fastPreviewWidthPx,
                                 crispWidthPx = crispWidthPx,
+                                currentZoomScale = scaleAnim.value,
                                 isActivelyMoving = activeMotion,
                                 canvasTheme = state.canvasTheme,
                                 highlightBoxes = state.searchBoxesByPage[pageIndex].orEmpty(),
                                 aspectRatioProvider = { viewModel.getPageAspectRatio(pageIndex) },
-                                renderProvider = { width -> viewModel.renderPage(pageIndex, width) }
+                                renderProvider = { width -> viewModel.renderPage(pageIndex, width) },
+                                tileProvider = { l, t, r, b, fullW ->
+                                    viewModel.renderHighZoomTile(pageIndex, l, t, r, b, fullW)
+                                }
                             )
                         }
                     }
@@ -867,34 +876,59 @@ private fun GoogleDriveVerticalScrubber(
     }
 }
 
+/**
+ * Coordinated single-state-machine PDF page renderer:
+ * NotLoaded -> PreviewReady -> SharpReady -> HighZoomTileReady
+ * Strict monotonic resolution guard ensures a slower low-res pass can NEVER replace a sharper bitmap.
+ */
 @Composable
 private fun SmoothPdfPageItem(
     pageIndex: Int,
     fastWidthPx: Int,
     crispWidthPx: Int,
+    currentZoomScale: Float,
     isActivelyMoving: Boolean,
     canvasTheme: ReadingCanvasTheme,
     highlightBoxes: List<PdfSearchBox>,
     aspectRatioProvider: suspend () -> Float,
-    renderProvider: suspend (Int) -> Bitmap?
+    renderProvider: suspend (Int) -> Bitmap?,
+    tileProvider: suspend (Float, Float, Float, Float, Int) -> Bitmap?
 ) {
     var aspectRatio by remember(pageIndex) { mutableFloatStateOf(0.707f) }
     var bitmap by remember(pageIndex, canvasTheme) { mutableStateOf<Bitmap?>(null) }
+    var loadedWidthPx by remember(pageIndex, canvasTheme) { mutableStateOf(0) }
+    var zoomedTile by remember(pageIndex, canvasTheme) { mutableStateOf<Bitmap?>(null) }
 
     LaunchedEffect(pageIndex) {
         aspectRatio = aspectRatioProvider()
     }
 
-    LaunchedEffect(pageIndex, canvasTheme) {
-        if (bitmap == null) {
-            bitmap = renderProvider(fastWidthPx)
+    // Single coordinated render state machine (zero concurrent race conditions)
+    LaunchedEffect(pageIndex, canvasTheme, isActivelyMoving, currentZoomScale) {
+        if (loadedWidthPx < fastWidthPx) {
+            val preview = renderProvider(fastWidthPx)
+            if (preview != null && fastWidthPx > loadedWidthPx) {
+                bitmap = preview
+                loadedWidthPx = fastWidthPx
+            }
         }
-    }
-
-    LaunchedEffect(pageIndex, canvasTheme, isActivelyMoving) {
-        if (!isActivelyMoving) {
+        if (!isActivelyMoving && loadedWidthPx < crispWidthPx) {
             val crisp = renderProvider(crispWidthPx)
-            if (crisp != null) bitmap = crisp
+            if (crisp != null && crispWidthPx > loadedWidthPx) {
+                bitmap = crisp
+                loadedWidthPx = crispWidthPx
+            }
+        }
+        // High-zoom crisp upgrade when user zooms past 2.2x (up to 7x) and pauses
+        if (!isActivelyMoving && currentZoomScale >= 2.2f) {
+            delay(180)
+            val targetZoomedFullW = (crispWidthPx * currentZoomScale.coerceAtMost(4.5f)).toInt().coerceAtMost(6400)
+            val tile = tileProvider(0f, 0f, 1f, 1f, targetZoomedFullW)
+            if (tile != null) {
+                zoomedTile = tile
+            }
+        } else if (currentZoomScale < 1.8f) {
+            zoomedTile = null
         }
     }
 
@@ -904,10 +938,10 @@ private fun SmoothPdfPageItem(
             .aspectRatio(aspectRatio)
             .background(if (canvasTheme == ReadingCanvasTheme.NIGHT_INVERTED) Color(0xFF14161A) else Color.White)
     ) {
-        val bmp = bitmap
-        if (bmp != null && !bmp.isRecycled) {
+        val displayBmp = zoomedTile ?: bitmap
+        if (displayBmp != null && !displayBmp.isRecycled) {
             Image(
-                bitmap = bmp.asImageBitmap(),
+                bitmap = displayBmp.asImageBitmap(),
                 contentDescription = "Page ${pageIndex + 1}",
                 contentScale = ContentScale.FillBounds,
                 modifier = Modifier.fillMaxSize()

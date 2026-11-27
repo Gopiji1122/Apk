@@ -5,6 +5,7 @@ import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
+import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
 import org.opencv.core.Size
@@ -13,12 +14,15 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.math.abs
 
-/**
- * Adobe Scan-style temporal smoother & stability tracker:
- * - Smooths corners across frames (EMA) so the detection box glides smoothly without jitter.
- * - Tolerates up to 2 dropped frames so the overlay never blinks/flickers.
- * - Triggers Auto-Capture only when the document is held steady, with cooldown protection.
- */
+data class FrameDetectionResult(
+    val quad: DocumentQuad?,
+    val sharpnessScore: Double = 100.0,
+    val meanLuminance: Double = 128.0
+) {
+    val isSharpEnough: Boolean get() = sharpnessScore >= 32.0
+    val isWellExposed: Boolean get() = meanLuminance in 32.0..242.0
+}
+
 class QuadStabilityTracker(
     private val requiredSteadyFrames: Int = 6,
     private val maxMovementDelta: Float = 0.035f,
@@ -33,31 +37,51 @@ class QuadStabilityTracker(
     data class StabilityState(
         val detectedQuad: DocumentQuad?,
         val progress: Float,
-        val shouldAutoCapture: Boolean
+        val shouldAutoCapture: Boolean,
+        val qualityHint: String? = null
     )
 
     fun onFrame(rawQuad: DocumentQuad?, nowMillis: Long = System.currentTimeMillis()): StabilityState {
+        return onFrameEvaluated(FrameDetectionResult(rawQuad), nowMillis)
+    }
+
+    fun onFrameEvaluated(
+        result: FrameDetectionResult,
+        nowMillis: Long = System.currentTimeMillis()
+    ): StabilityState {
+        val rawQuad = result.quad
         if (rawQuad == null) {
             missedCount++
             if (missedCount > maxMissedFrames) {
                 smoothedQuad = null
                 steadyCount = 0
-                return StabilityState(null, 0f, false)
+                return StabilityState(null, 0f, false, null)
             }
             val progress = (steadyCount.toFloat() / requiredSteadyFrames.toFloat()).coerceIn(0f, 1f)
-            return StabilityState(smoothedQuad, progress, false)
+            return StabilityState(smoothedQuad, progress, false, null)
         }
 
         missedCount = 0
         val prev = smoothedQuad
         val nextSmoothed = if (prev == null) rawQuad else prev.lerp(rawQuad, 0.38f)
+        smoothedQuad = nextSmoothed
+
+        // Reject blurry or badly exposed frames from triggering auto-capture
+        if (!result.isSharpEnough) {
+            steadyCount = (steadyCount - 1).coerceAtLeast(0)
+            return StabilityState(nextSmoothed, steadyCount.toFloat() / requiredSteadyFrames, false, "Focusing — hold still")
+        }
+        if (!result.isWellExposed) {
+            steadyCount = (steadyCount - 1).coerceAtLeast(0)
+            val hint = if (result.meanLuminance < 32.0) "Too dark — turn on flash" else "Too bright — reduce glare"
+            return StabilityState(nextSmoothed, steadyCount.toFloat() / requiredSteadyFrames, false, hint)
+        }
 
         if (prev != null && rawQuad.maxCornerDelta(prev) <= maxMovementDelta) {
             steadyCount++
         } else {
             steadyCount = 1
         }
-        smoothedQuad = nextSmoothed
 
         val progress = (steadyCount.toFloat() / requiredSteadyFrames.toFloat()).coerceIn(0f, 1f)
         val cooldownReady = (nowMillis - lastTriggerMillis) >= cooldownMillis
@@ -66,7 +90,7 @@ class QuadStabilityTracker(
             lastTriggerMillis = nowMillis
             steadyCount = 0
         }
-        return StabilityState(nextSmoothed, progress, trigger)
+        return StabilityState(nextSmoothed, progress, trigger, null)
     }
 
     fun reset() {
@@ -79,18 +103,25 @@ class QuadStabilityTracker(
 @Singleton
 class DocumentEdgeDetector @Inject constructor() {
 
+    fun detectDocumentQuad(bitmap: Bitmap, rotationDegrees: Int = 0): DocumentQuad? =
+        analyzeFrame(bitmap, rotationDegrees).quad
+
     /**
-     * Detects the largest 4-corner document boundary in a camera or file bitmap.
-     * Applies [rotationDegrees] (e.g. 90 on portrait OnePlus rear camera) BEFORE contour
-     * detection so normalized coordinates always match the portrait preview 1:1.
+     * Detects 4-corner document quad + computes Laplacian sharpness & luminance exposure
+     * on a lightweight downscaled frame for sharp, reliable Auto-Capture.
      */
-    fun detectDocumentQuad(bitmap: Bitmap, rotationDegrees: Int = 0): DocumentQuad? {
-        if (!OpenCvInitializer.ensureInitialized()) return null
+    fun analyzeFrame(bitmap: Bitmap, rotationDegrees: Int = 0): FrameDetectionResult {
+        if (!OpenCvInitializer.ensureInitialized()) return FrameDetectionResult(null)
 
         val src = Mat()
         val resized = Mat()
         val upright = Mat()
         val gray = Mat()
+        val laplacian = Mat()
+        val meanMat = MatOfDouble()
+        val stdMat = MatOfDouble()
+        val lumMean = MatOfDouble()
+        val lumStd = MatOfDouble()
         val closed = Mat()
         val blurred = Mat()
         val edges = Mat()
@@ -114,18 +145,24 @@ class DocumentEdgeDetector @Inject constructor() {
             }
 
             Imgproc.cvtColor(upright, gray, Imgproc.COLOR_RGBA2GRAY)
-            // Morphological close suppresses interior text so outer paper boundary dominates
+
+            // Exposure & Laplacian variance blur metrics
+            Core.meanStdDev(gray, lumMean, lumStd)
+            val meanLuminance = lumMean.toArray().firstOrNull() ?: 128.0
+
+            Imgproc.Laplacian(gray, laplacian, CvType.CV_64F)
+            Core.meanStdDev(laplacian, meanMat, stdMat)
+            val stdVal = stdMat.toArray().firstOrNull() ?: 10.0
+            val sharpnessVariance = stdVal * stdVal
+
             Imgproc.morphologyEx(gray, closed, Imgproc.MORPH_CLOSE, closeKernel)
             Imgproc.GaussianBlur(closed, blurred, Size(5.0, 5.0), 0.0)
             Imgproc.Canny(blurred, edges, 40.0, 130.0)
             Imgproc.dilate(edges, dilated, dilateKernel)
 
             Imgproc.findContours(
-                dilated,
-                contours,
-                hierarchy,
-                Imgproc.RETR_EXTERNAL,
-                Imgproc.CHAIN_APPROX_SIMPLE
+                dilated, contours, hierarchy,
+                Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
             )
 
             val totalArea = upright.cols().toDouble() * upright.rows().toDouble()
@@ -162,9 +199,9 @@ class DocumentEdgeDetector @Inject constructor() {
                     approx.release()
                 }
             }
-            bestQuad
+            FrameDetectionResult(bestQuad, sharpnessVariance, meanLuminance)
         } catch (_: Throwable) {
-            null
+            FrameDetectionResult(null)
         } finally {
             contours.forEach { it.release() }
             dilateKernel.release()
@@ -174,6 +211,11 @@ class DocumentEdgeDetector @Inject constructor() {
             edges.release()
             blurred.release()
             closed.release()
+            lumStd.release()
+            lumMean.release()
+            stdMat.release()
+            meanMat.release()
+            laplacian.release()
             gray.release()
             upright.release()
             resized.release()
