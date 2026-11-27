@@ -186,19 +186,31 @@ class MuPdfDocumentHandle(
             val bounds = page.bounds
             val pageW = max(1f, bounds.x1 - bounds.x0)
             val pageH = max(1f, bounds.y1 - bounds.y0)
-            val fullW = zoomedFullPageWidthPx.coerceIn(720, 7600)
-            val scale = fullW.toFloat() / pageW
-            val fullH = (pageH * scale).toInt().coerceAtLeast(1)
-
             val l = leftNorm.coerceIn(0f, 0.99f)
             val t = topNorm.coerceIn(0f, 0.99f)
             val r = rightNorm.coerceIn(l + 0.01f, 1f)
             val b = bottomNorm.coerceIn(t + 0.01f, 1f)
+            val spanW = (r - l).coerceAtLeast(0.01f)
+            val spanH = (b - t).coerceAtLeast(0.01f)
 
+            // Uniformly cap full-page scale so the ENTIRE requested region (l,t,r,b) fits inside
+            // the safe bitmap budget (max 2400x3000) without ever cropping or distorting the page!
+            var scale = zoomedFullPageWidthPx.coerceIn(720, 7600).toFloat() / pageW
+            val reqTileW = spanW * pageW * scale
+            val reqTileH = spanH * pageH * scale
+            val maxTileW = 2400f
+            val maxTileH = 3000f
+            if (reqTileW > maxTileW || reqTileH > maxTileH) {
+                val downFactor = minOf(maxTileW / reqTileW, maxTileH / reqTileH)
+                scale *= downFactor
+            }
+
+            val fullW = (pageW * scale).toInt().coerceAtLeast(1)
+            val fullH = (pageH * scale).toInt().coerceAtLeast(1)
             val patchX = (l * fullW).toInt()
             val patchY = (t * fullH).toInt()
-            val tileW = ((r - l) * fullW).toInt().coerceIn(64, 1800)
-            val tileH = ((b - t) * fullH).toInt().coerceIn(64, 2200)
+            val tileW = (spanW * fullW).toInt().coerceIn(64, 2400)
+            val tileH = (spanH * fullH).toInt().coerceIn(64, 3000)
 
             val tileBmp = Bitmap.createBitmap(tileW, tileH, Bitmap.Config.ARGB_8888)
             tileBmp.eraseColor(android.graphics.Color.WHITE)
@@ -351,7 +363,11 @@ class MuPdfDocumentHandle(
                 )
             )
         }
-        canvas.drawBitmap(source, 0f, 0f, paint)
+        try {
+            canvas.drawBitmap(source, 0f, 0f, paint)
+        } finally {
+            if (inverted !== source && !source.isRecycled) source.recycle()
+        }
         return inverted
     }
 

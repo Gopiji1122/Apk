@@ -251,18 +251,23 @@ fun PdfReaderScreen(
                         },
                         onDoubleTap = { tapOffset ->
                             scope.launch {
-                                if (scaleAnim.value > 1.2f) {
-                                    offsetX = 0f
-                                    offsetY = 0f
-                                    scaleAnim.animateTo(1f, tween(210, easing = FastOutSlowInEasing))
+                                val startScale = scaleAnim.value
+                                val startX = offsetX
+                                val startY = offsetY
+                                val target = if (startScale > 1.35f) 1.0f else 1.85f
+                                val (endX, endY) = if (target <= 1.01f) {
+                                    0f to 0f
                                 } else {
-                                    val target = 2.6f
                                     val cx = (viewportSize.width / 2f - tapOffset.x) * (target - 1f)
                                     val cy = (viewportSize.height / 2f - tapOffset.y) * (target - 1f)
-                                    val (clampedX, clampedY) = clampOffsets(target, cx, cy)
-                                    offsetX = clampedX
-                                    offsetY = clampedY
-                                    scaleAnim.animateTo(target, tween(210, easing = FastOutSlowInEasing))
+                                    clampOffsets(target, cx, cy)
+                                }
+                                scaleAnim.animateTo(target, tween(240, easing = FastOutSlowInEasing)) {
+                                    val frac = if (kotlin.math.abs(target - startScale) > 0.001f) {
+                                        ((value - startScale) / (target - startScale)).coerceIn(0f, 1f)
+                                    } else 1f
+                                    offsetX = startX + (endX - startX) * frac
+                                    offsetY = startY + (endY - startY) * frac
                                 }
                             }
                         }
@@ -276,11 +281,13 @@ fun PdfReaderScreen(
                                 val event = awaitPointerEvent()
                                 val activePointers = event.changes.count { it.pressed }
                                 if (activePointers >= 2) {
-                                    val zoomChange = event.calculateZoom()
+                                    val rawZoom = event.calculateZoom()
+                                    // Smoothly damp noisy single-frame finger spikes so pinch never jumps suddenly
+                                    val zoomChange = if (rawZoom.isFinite()) rawZoom.coerceIn(0.90f, 1.12f) else 1f
                                     val panChange = event.calculatePan()
                                     val centroid = event.calculateCentroid(useCurrent = true)
                                     val oldScale = scaleAnim.value
-                                    val newScale = (oldScale * zoomChange).coerceIn(1f, 7.0f)
+                                    val newScale = (oldScale * zoomChange).coerceIn(1f, 5.0f)
                                     val factor = if (oldScale > 0f) newScale / oldScale else 1f
 
                                     val focalX = centroid.x - viewportSize.width / 2f

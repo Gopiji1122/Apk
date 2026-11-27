@@ -117,6 +117,8 @@ class Stage06To14EnhancementPipeline @Inject constructor() {
     fun runAdaptiveAutoColour(
         rgb: Mat,
         whitePointOffset: Float = 11f,
+        maxWhitePoint: Float = 240f,
+        bleedCutoff: Boolean = true,
         inkGamma: Double = 1.48,
         chromaBoost: Float = 1.48f,
         sharpAmount: Float = 0.34f
@@ -171,7 +173,7 @@ class Stage06To14EnhancementPipeline @Inject constructor() {
                     }
                 }
             }
-            val dynamicWp = AdaptiveToneMath.computeDynamicWhitePoint(paperP60, whitePointOffset)
+            val dynamicWp = if (bleedCutoff) AdaptiveToneMath.computeDynamicWhitePoint(paperP60, whitePointOffset).coerceAtMost(maxWhitePoint.coerceIn(195f, 246f)) else 252f
             val neutralLut = AdaptiveToneMath.buildNeutralToneTable(dynamicWp, blackPoint = 18f, gamma = inkGamma)
             val colorLut = AdaptiveToneMath.buildColorInkToneTable(blackPoint = 14f, gamma = 1.35)
 
@@ -281,8 +283,11 @@ class Stage06To14EnhancementPipeline @Inject constructor() {
             val inkMean = if (Core.countNonZero(inkMask) > 30) Core.mean(small, inkMask).`val`[0] else 120.0
             val contrast = ((paperMean - inkMean) / 2.2).toFloat().coerceIn(0f, 100f)
 
-            Imgproc.threshold(small, glareMask, 253.0, 255.0, Imgproc.THRESH_BINARY)
-            val glareRatio = Core.countNonZero(glareMask).toFloat() / (small.rows() * small.cols()).coerceAtLeast(1).toFloat()
+            // Glare check: detect pure 255 clipped highlights excluding uniform white paper background
+            Imgproc.threshold(small, glareMask, 254.0, 255.0, Imgproc.THRESH_BINARY)
+            val clipped = Core.countNonZero(glareMask).toFloat()
+            val total = (small.rows() * small.cols()).coerceAtLeast(1).toFloat()
+            val glareRatio = if (paperMean > 245.0) 0f else (clipped / total).coerceIn(0f, 1f)
 
             Imgproc.Laplacian(small, lap, CvType.CV_64F)
             Core.meanStdDev(lap, mean, std)

@@ -255,7 +255,7 @@ fun ScannerScreen(
     BackHandler {
         when {
             state.stage == ScannerStage.REVIEW && state.activeTool != ReviewTool.NONE -> {
-                viewModel.selectReviewTool(ReviewTool.NONE)
+                viewModel.cancelActiveTool()
             }
             state.stage == ScannerStage.REVIEW -> {
                 viewModel.requestExitScanner(onNavigateHome)
@@ -682,6 +682,8 @@ private fun LiveCameraScannerView(
 
     DisposableEffect(Unit) {
         onDispose {
+            runCatching { cameraRef?.cameraControl?.enableTorch(false) }
+            viewModel.turnOffFlash()
             runCatching { analysisExecutor.shutdown() }
             runCatching { shutterSound?.release() }
         }
@@ -1127,7 +1129,7 @@ private fun ReviewAndEditScreen(
                         }
                         else -> {
                             val showPath = if (state.compareOriginal) activePage.warpedImagePath else activePage.enhancedImagePath
-                            val liveRot = if (state.activeTool == ReviewTool.ROTATE) state.pendingFineRotation else 0f
+                            val liveRot = if (state.activeTool == ReviewTool.ROTATE) state.pendingRotation90.toFloat() + state.pendingFineRotation else 0f
                             val liveFilter = if (state.activeTool == ReviewTool.ADJUST) {
                                 buildLiveColorFilter(state.liveAdjustBrightness, state.liveAdjustContrast)
                             } else {
@@ -1505,7 +1507,7 @@ private fun RotateToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
             IconButton(onClick = { viewModel.rotateActivePage90(clockwise = false) }) {
                 Icon(Icons.Outlined.RotateLeft, contentDescription = "Rotate Left 90", tint = Color.White)
             }
-            Text(String.format("%+.1f°", state.pendingFineRotation), color = AccentBlue, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+            Text(String.format("%+.1f°", state.pendingRotation90.toFloat() + state.pendingFineRotation), color = AccentBlue, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
             IconButton(onClick = { viewModel.rotateActivePage90(clockwise = true) }) {
                 Icon(Icons.Outlined.RotateRight, contentDescription = "Rotate Right 90", tint = Color.White)
             }
@@ -1515,10 +1517,10 @@ private fun RotateToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
             onDegreesChange = viewModel::updatePendingFineRotation
         )
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = { viewModel.selectReviewTool(ReviewTool.NONE) }) { Text("Cancel", color = Color.LightGray) }
-            TextButton(onClick = { viewModel.updatePendingFineRotation(0f) }) { Text("Reset 0°", color = Color.White) }
+            TextButton(onClick = { viewModel.cancelActiveTool() }) { Text("Cancel", color = Color.LightGray) }
+            TextButton(onClick = { viewModel.resetPendingRotation() }) { Text("Reset 0°", color = Color.White) }
             Button(onClick = { viewModel.applyFineRotation() }, colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)) {
-                Text("Apply")
+                Text("Done")
             }
         }
     }
@@ -1604,11 +1606,12 @@ private fun FiltersToolPanel(state: ScannerUiState, viewModel: ScannerViewModel)
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = { viewModel.applyFilterToAllPages(current) }) {
-                Text("Apply to All Pages", color = AccentBlue)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { viewModel.cancelActiveTool() }) { Text("Cancel", color = Color.LightGray) }
+                TextButton(onClick = { viewModel.applyFilterToAllPages(current) }) { Text("Apply All", color = AccentBlue) }
             }
             Button(
-                onClick = { viewModel.selectReviewTool(ReviewTool.NONE) },
+                onClick = { viewModel.commitActiveTool() },
                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
             ) { Text("Done") }
         }
@@ -1639,7 +1642,8 @@ private fun AdjustToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
                 IconButton(onClick = { viewModel.redoActivePageEdit() }, enabled = state.canRedo) {
                     Icon(Icons.AutoMirrored.Outlined.Redo, contentDescription = "Redo", tint = if (state.canRedo) Color.White else Color.Gray)
                 }
-                TextButton(onClick = { viewModel.resetActivePageEdits() }) { Text("Reset", color = Color.LightGray) }
+                TextButton(onClick = { viewModel.cancelActiveTool() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Cancel", color = Color.LightGray, fontSize = 12.sp) }
+                TextButton(onClick = { viewModel.resetActivePageEdits() }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("Reset", color = Color.White, fontSize = 12.sp) }
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedButton(
@@ -1652,7 +1656,7 @@ private fun AdjustToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
                 }
                 Spacer(Modifier.width(8.dp))
                 Button(
-                    onClick = { viewModel.selectReviewTool(ReviewTool.NONE) },
+                    onClick = { viewModel.commitActiveTool() },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
                 ) { Text("Done", fontSize = 13.sp) }
@@ -1783,16 +1787,19 @@ private fun CleanupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel)
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(
-                onClick = { viewModel.undoLiveCleanup() },
-                enabled = state.cleanupUndoCount > 0
-            ) {
-                Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(4.dp))
-                Text("Undo (${state.cleanupUndoCount})")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { viewModel.cancelActiveTool() }) { Text("Cancel", color = Color.LightGray) }
+                TextButton(
+                    onClick = { viewModel.undoLiveCleanup() },
+                    enabled = state.cleanupUndoCount > 0
+                ) {
+                    Icon(Icons.AutoMirrored.Outlined.Undo, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Undo (${state.cleanupUndoCount})")
+                }
             }
             Button(
-                onClick = { viewModel.selectReviewTool(ReviewTool.NONE) },
+                onClick = { viewModel.commitActiveTool() },
                 colors = ButtonDefaults.buttonColors(containerColor = AccentBlue)
             ) { Text("Done") }
         }
@@ -1837,7 +1844,7 @@ private fun MarkupToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Row {
-                TextButton(onClick = { viewModel.selectReviewTool(ReviewTool.NONE) }) { Text("Cancel", color = Color.LightGray) }
+                TextButton(onClick = { viewModel.cancelActiveTool() }) { Text("Cancel", color = Color.LightGray) }
                 TextButton(onClick = { viewModel.undoMarkupStroke() }, enabled = state.pendingMarkupStrokes.isNotEmpty()) {
                     Text("Undo", color = Color.White)
                 }
@@ -1884,7 +1891,7 @@ private fun ResizeToolPanel(state: ScannerUiState, viewModel: ScannerViewModel) 
                     Text("All", color = AccentBlue, fontSize = 12.sp)
                 }
                 Button(
-                    onClick = { viewModel.selectReviewTool(ReviewTool.NONE) },
+                    onClick = { viewModel.commitActiveTool() },
                     colors = ButtonDefaults.buttonColors(containerColor = AccentBlue),
                     contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp)
                 ) { Text("Done", fontSize = 13.sp) }

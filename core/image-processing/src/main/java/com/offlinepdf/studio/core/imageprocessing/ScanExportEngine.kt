@@ -176,13 +176,14 @@ class ScanExportEngine @Inject constructor(
             pages.forEachIndexed { index, item ->
                 val pageNum = index + 1
                 onProgress(pageNum, pages.size)
-                val rawBmp = processor.decodeDownsampledBitmap(item.enhancedImagePath, maxSide = 2000)
+                val exportMaxSide = if (options.jpegQuality >= 92) 3200 else 2400
+                val rawBmp = processor.decodeDownsampledBitmap(item.enhancedImagePath, maxSide = exportMaxSide)
                     ?: return ScanExportResult.Failure(
                         pageNum,
                         "Export aborted: Page #$pageNum is missing or unreadable. All originals preserved."
                     )
 
-                val compressedBmp = recompressIfNeeded(rawBmp, options.jpegQuality)
+                val compressedBmp = if (options.jpegQuality >= 92) rawBmp else recompressIfNeeded(rawBmp, options.jpegQuality)
                 if (compressedBmp !== rawBmp) rawBmp.recycle()
 
                 try {
@@ -206,25 +207,30 @@ class ScanExportEngine @Inject constructor(
                     val left = margin + (availW - drawW) / 2f
                     val top = margin + (availH - drawH) / 2f
 
-                    // Draw invisible positioned OCR text layer (if Searchable PDF)
-                    val words = ocrWordsByPageIndex[index].orEmpty()
-                    if (words.isNotEmpty()) {
-                        for (w in words) {
-                            val boxH = ((w.bottomNorm - w.topNorm) * drawH).coerceIn(6f, 48f)
-                            invisibleTextPaint.textSize = boxH * 0.85f
-                            val x = left + w.leftNorm * drawW
-                            val y = top + w.bottomNorm * drawH
-                            canvas.drawText(w.text, x, y, invisibleTextPaint)
-                        }
-                    }
-
-                    // Draw scanned page visual image on top
+                    // 1. Draw scanned page visual image FIRST
                     canvas.drawBitmap(
                         compressedBmp,
                         null,
                         RectF(left, top, left + drawW, top + drawH),
                         imgPaint
                     )
+
+                    // 2. Draw invisible positioned OCR text layer OVER the image so text is selectable/searchable
+                    val words = ocrWordsByPageIndex[index].orEmpty()
+                    if (words.isNotEmpty()) {
+                        for (w in words) {
+                            val boxW = ((w.rightNorm - w.leftNorm) * drawW).coerceAtLeast(4f)
+                            val boxH = ((w.bottomNorm - w.topNorm) * drawH).coerceIn(6f, 48f)
+                            invisibleTextPaint.textSize = boxH * 0.88f
+                            invisibleTextPaint.textScaleX = 1f
+                            val measuredW = invisibleTextPaint.measureText(w.text).coerceAtLeast(1f)
+                            invisibleTextPaint.textScaleX = (boxW / measuredW).coerceIn(0.4f, 2.5f)
+                            val x = left + w.leftNorm * drawW
+                            val y = top + w.bottomNorm * drawH - (boxH * 0.12f)
+                            canvas.drawText(w.text, x, y, invisibleTextPaint)
+                        }
+                        invisibleTextPaint.textScaleX = 1f
+                    }
                     pdfDocument.finishPage(page)
                 } finally {
                     compressedBmp.recycle()

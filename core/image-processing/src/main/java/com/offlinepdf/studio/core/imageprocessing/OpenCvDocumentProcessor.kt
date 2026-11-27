@@ -58,7 +58,7 @@ class OpenCvDocumentProcessor @Inject constructor(
     var lastQualityReport: DocumentQualityReport? = null
         private set
 
-    fun normalizeExifOrientation(filePath: String, maxSide: Int = 3200): Boolean {
+    fun normalizeExifOrientation(filePath: String, maxSide: Int = 4200): Boolean {
         val file = File(filePath)
         if (!file.exists()) return false
         val exif = runCatching { ExifInterface(filePath) }.getOrNull() ?: return true
@@ -588,6 +588,8 @@ class OpenCvDocumentProcessor @Inject constructor(
         val output = enhancementPipeline.runAdaptiveAutoColour(
             rgb = rgb,
             whitePointOffset = wpOffset,
+            maxWhitePoint = whitePoint.toFloat(),
+            bleedCutoff = bleedCutoff,
             inkGamma = gamma,
             chromaBoost = boost,
             sharpAmount = sharp

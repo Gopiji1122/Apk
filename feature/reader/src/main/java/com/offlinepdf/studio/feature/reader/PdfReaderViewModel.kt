@@ -20,6 +20,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -71,26 +72,39 @@ class PdfReaderViewModel @Inject constructor(
 
     private var activeHandle: PdfDocumentHandle? = null
     private var activeUriString: String? = null
+    private var openDocumentJob: Job? = null
+    private var bookmarkJob: Job? = null
+    private var openRequestId: Long = 0L
     private var searchJob: Job? = null
     private var prefetchJob: Job? = null
     private var lastScrollPage: Int = 0
 
     fun openUri(uriString: String) {
         if (activeUriString == uriString && activeHandle != null) return
+        openDocumentJob?.cancel()
+        bookmarkJob?.cancel()
+        searchJob?.cancel()
+        prefetchJob?.cancel()
+        val requestId = ++openRequestId
         activeUriString = uriString
         closeHandle()
 
-        viewModelScope.launch {
+        openDocumentJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null, needsPassword = false) }
             try {
                 val uri = Uri.parse(uriString)
                 val entity = storageRepository.importPickedDocument(uri)
                 val localCopy = storageRepository.materializeReadOnlyCopy(uri)
+                if (requestId != openRequestId) return@launch
 
                 observeBookmarks(uriString)
 
                 when (val result = pdfEngine.openDocument(localCopy.absolutePath)) {
                     is PdfOpenResult.Opened -> {
+                        if (requestId != openRequestId) {
+                            runCatching { result.handle.close() }
+                            return@launch
+                        }
                         activeHandle = result.handle
                         val resumePage = entity.lastReadPage.coerceIn(
                             0,
@@ -114,6 +128,10 @@ class PdfReaderViewModel @Inject constructor(
                         }
                     }
                     is PdfOpenResult.PasswordRequired -> {
+                        if (requestId != openRequestId) {
+                            runCatching { result.handle.close() }
+                            return@launch
+                        }
                         activeHandle = result.handle
                         _uiState.update {
                             it.copy(
@@ -335,6 +353,7 @@ class PdfReaderViewModel @Inject constructor(
             val hits = withContext(ioDispatcher) {
                 val results = mutableListOf<PdfSearchHit>()
                 for (i in 0 until handle.pageCount) {
+                    ensureActive()
                     handle.searchPage(i, query)?.let { results.add(it) }
                 }
                 results
@@ -375,7 +394,8 @@ class PdfReaderViewModel @Inject constructor(
     }
 
     private fun observeBookmarks(uriString: String) {
-        viewModelScope.launch {
+        bookmarkJob?.cancel()
+        bookmarkJob = viewModelScope.launch {
             documentDao.observeBookmarks(uriString).collect { list ->
                 _uiState.update { it.copy(bookmarks = list) }
             }

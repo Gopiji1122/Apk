@@ -14,8 +14,8 @@ android {
         applicationId = "com.offlinepdf.studio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "4.0.0-pro-engine"
+        versionCode = 16
+        versionName = "4.3.0-repair"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "hi")
