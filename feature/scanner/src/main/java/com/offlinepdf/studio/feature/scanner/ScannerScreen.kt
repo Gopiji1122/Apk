@@ -513,8 +513,7 @@ fun ScannerScreen(
                     } else {
                         state.combinedOcrText.lines()
                             .filter { it.contains(state.ocrSearchQuery, ignoreCase = true) }
-                            .joinToString("
-")
+                            .joinToString("\n")
                             .ifBlank { "No matching lines." }
                     }
                     Card(modifier = Modifier.fillMaxWidth().height(200.dp)) {

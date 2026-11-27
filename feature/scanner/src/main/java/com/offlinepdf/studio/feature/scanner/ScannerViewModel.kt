@@ -98,13 +98,8 @@ data class ScannerUiState(
         get() = pages.getOrNull(activePageIndex)
 
     val combinedOcrText: String
-        get() = ocrResults.joinToString("
-
---- Page Break ---
-
-") {
-            "Page ${it.pageIndex + 1}:
-${it.fullText}"
+        get() = ocrResults.joinToString("\n\n--- Page Break ---\n\n") {
+            "Page ${it.pageIndex + 1}:\n${it.fullText}"
         }
 }
 

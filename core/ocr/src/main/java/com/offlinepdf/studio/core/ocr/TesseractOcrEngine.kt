@@ -56,7 +56,7 @@ class TesseractOcrEngine @Inject constructor(
 
     /**
      * Checks whether local traineddata files exist in app-private storage, extracting any
-     * bundled APK assets/tessdata/*.traineddata first. Never downloads from the internet.
+     * bundled APK assets/tessdata traineddata files first. Never downloads from the internet.
      */
     suspend fun checkLanguageAvailability(): OcrLanguageStatus = withContext(ioDispatcher) {
         extractBundledAssetsIfPresent()
