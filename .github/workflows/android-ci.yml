@@ -60,6 +60,20 @@ jobs:
           echo "DocAligner ONNX size: $SIZE bytes"
           test "$SIZE" -gt 4000000
 
+      - name: Ensure Personal Signing Keystore Exists
+        run: |
+          if [ ! -f app/personal-signing.keystore ]; then
+            echo "Generating fallback personal-signing.keystore..."
+            keytool -genkeypair -v \
+              -keystore app/personal-signing.keystore \
+              -alias offlinepdf \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass offlinepdf2026 \
+              -keypass offlinepdf2026 \
+              -dname "CN=OfflinePDFStudio, O=Personal, C=IN"
+          fi
+          ls -lh app/personal-signing.keystore
+
       - name: Build Debug ARM64 APK
         run: gradle :app:assembleDebug --stacktrace
 
