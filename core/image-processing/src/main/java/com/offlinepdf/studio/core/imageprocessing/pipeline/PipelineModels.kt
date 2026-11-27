@@ -55,7 +55,7 @@ object AdaptiveToneMath {
         return ((labChroma - 4.0f) / 7.5f).coerceIn(0f, 1f)
     }
 
-    fun buildNeutralToneTable(whitePoint: Float, blackPoint: Float = 18f, gamma: Float = 1.48): ByteArray {
+    fun buildNeutralToneTable(whitePoint: Float, blackPoint: Float = 18f, gamma: Double = 1.48): ByteArray {
         val wp = whitePoint.coerceIn(200f, 246f).toDouble()
         val bp = blackPoint.coerceIn(0f, 45f).toDouble()
         val denom = (wp - bp).coerceAtLeast(1.0)
@@ -69,7 +69,7 @@ object AdaptiveToneMath {
         }
     }
 
-    fun buildColorInkToneTable(blackPoint: Float = 14f, gamma: Float = 1.36): ByteArray {
+    fun buildColorInkToneTable(blackPoint: Float = 14f, gamma: Double = 1.36): ByteArray {
         val bp = blackPoint.toDouble()
         val denom = (255.0 - bp).coerceAtLeast(1.0)
         return ByteArray(256) { i ->
