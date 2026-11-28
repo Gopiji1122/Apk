@@ -11,4 +11,3 @@
 .cxx
 *.jks
 *.keystore
-!app/personal-signing.keystore

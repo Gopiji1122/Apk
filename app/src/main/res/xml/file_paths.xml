@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
-    <cache-path name="shared_scans" path="shared_scans/" />
-    <files-path name="scan_sessions" path="scan_sessions/" />
+    <cache-path name="shared" path="shared/" />
 </paths>

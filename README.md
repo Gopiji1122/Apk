@@ -1,3 +1,5 @@
+> **Phase 3.6** — see CHANGELOG_PHASE3_6.md for the premium redesign, reader/scanner completion and bug fixes.
+
 # Offline PDF Studio (Phase 3.5 — Hardened Reader & Offline Scanner)
 
 A private, 100% offline, modular Android PDF Editor & Document Scanner built with **Kotlin**, **Jetpack Compose (Material 3)**, **Clean Architecture + MVVM**, **Hilt**, **Room**, **DataStore**, **CameraX 1.4.2**, **OpenCV 4.12.0**, and **MuPDF 1.28.5**.

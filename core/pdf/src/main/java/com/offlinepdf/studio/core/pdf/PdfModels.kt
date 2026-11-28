@@ -39,6 +39,25 @@ data class PdfSearchHit(
     val quadCount: Int get() = boxes.size
 }
 
+/** A tappable region on a page. Either jumps to [targetPage] or opens an external [uri]. */
+data class PdfLink(
+    val box: PdfSearchBox,
+    val targetPage: Int? = null,
+    val uri: String? = null
+)
+
+/**
+ * A rendered sub-rectangle of a page together with the exact normalized rectangle it covers
+ * (pixel-aligned, so it may differ very slightly from the requested region).
+ */
+data class PdfRegionTile(
+    val bitmap: Bitmap,
+    val leftNorm: Float,
+    val topNorm: Float,
+    val rightNorm: Float,
+    val bottomNorm: Float
+)
+
 data class PdfOutlineEntry(
     val title: String,
     val pageIndex: Int,
@@ -83,6 +102,11 @@ interface PdfDocumentHandle : AutoCloseable {
         invertColors: Boolean = false
     ): Bitmap
     fun renderThumbnail(pageIndex: Int, targetWidthPx: Int = 220): Bitmap
+    /**
+     * Renders only the requested normalized sub-rectangle of a page at the pixel density implied by
+     * [zoomedFullPageWidthPx] (the width the WHOLE page would have on screen). The returned tile
+     * reports exactly which rectangle it covers.
+     */
     fun renderRegion(
         pageIndex: Int,
         leftNorm: Float,
@@ -91,7 +115,8 @@ interface PdfDocumentHandle : AutoCloseable {
         bottomNorm: Float,
         zoomedFullPageWidthPx: Int,
         invertColors: Boolean = false
-    ): Bitmap
+    ): PdfRegionTile
+    fun getPageLinks(pageIndex: Int): List<PdfLink>
     fun searchPage(pageIndex: Int, query: String): PdfSearchHit?
     fun extractPageText(pageIndex: Int): String
 }

@@ -68,11 +68,23 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { prefsRepository.setAnimationsEnabled(enabled) }
     }
 
+    fun setDefaultPageMode(mode: String) {
+        viewModelScope.launch { prefsRepository.setDefaultPageMode(mode) }
+    }
+
+    fun setNightReadingMode(enabled: Boolean) {
+        viewModelScope.launch { prefsRepository.setNightReadingMode(enabled) }
+    }
+
+    fun consumeStatus() {
+        statusMessageFlow.value = null
+    }
+
     fun clearCache() {
         viewModelScope.launch {
             storageRepository.clearWorkingCache()
             cacheBytesFlow.value = storageRepository.getWorkingCacheSizeBytes()
-            statusMessageFlow.value = "Temporary PDF cache cleared."
+            statusMessageFlow.value = "CLEARED"
         }
     }
 }

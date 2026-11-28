@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.offlinepdf.studio.core.database.DocumentEntity
+import com.offlinepdf.studio.core.pdf.DocumentThumbnailProvider
 import com.offlinepdf.studio.core.storage.SafDocumentRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
@@ -22,8 +23,11 @@ data class HomeUiState(
 
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    private val repository: SafDocumentRepository
+    private val repository: SafDocumentRepository,
+    private val thumbnails: DocumentThumbnailProvider
 ) : ViewModel() {
+
+    suspend fun thumbnail(uriString: String) = thumbnails.thumbnail(uriString)
 
     val uiState: StateFlow<HomeUiState> = combine(
         repository.observeRecentDocuments(10),

@@ -28,7 +28,7 @@ object DatabaseModule {
     @Singleton
     fun provideStudioDatabase(@ApplicationContext context: Context): StudioDatabase =
         Room.databaseBuilder(context, StudioDatabase::class.java, "offline_pdf_studio.db")
-            .fallbackToDestructiveMigration(dropAllTables = true)
+            .fallbackToDestructiveMigration()
             .build()
 
     @Provides
