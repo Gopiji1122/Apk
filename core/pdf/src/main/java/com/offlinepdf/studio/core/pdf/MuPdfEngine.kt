@@ -21,7 +21,10 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.max
+import kotlin.math.min
 
 @Singleton
 class MuPdfEngine @Inject constructor(
@@ -75,6 +78,10 @@ class MuPdfDocumentHandle(
 
     private val thumbCache = object : LruCache<String, Bitmap>(8 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount / 1024
+    }
+
+    private companion object {
+        const val MAX_TILE_SIDE = 2400f
     }
 
     override val pageCount: Int
@@ -160,16 +167,26 @@ class MuPdfDocumentHandle(
             if (!cached.isRecycled) return cached
         }
 
-        val rendered = renderInternal(pageIndex, safeWidth, normalizedRot, invertColors)
+        val rendered = try {
+            renderInternal(pageIndex, safeWidth, normalizedRot, invertColors)
+        } catch (_: OutOfMemoryError) {
+            // Free everything we can and retry once at a reduced resolution instead of crashing.
+            pageCache.evictAll()
+            thumbCache.evictAll()
+            renderInternal(pageIndex, (safeWidth * 0.6f).toInt().coerceAtLeast(120), normalizedRot, invertColors)
+        }
         pageCache.put(cacheKey, rendered)
         return rendered
     }
 
 
     /**
-     * High-zoom tile renderer using MuPDF's AndroidDrawDevice(bitmap, patchX, patchY):
-     * Renders ONLY the visible zoomed sub-rectangle at full vector sharpness (up to 7x zoom)
-     * without allocating an enormous full-page bitmap.
+     * High-zoom tile renderer using MuPDF's AndroidDrawDevice(bitmap, patchX, patchY).
+     *
+     * Only the requested sub-rectangle is rasterised, at the density implied by
+     * [zoomedFullPageWidthPx]. If the tile would exceed [MAX_TILE_SIDE] the density is reduced
+     * (instead of cropping the tile, which previously produced a wrongly-framed bitmap), and the
+     * returned [PdfRegionTile] reports exactly which normalized rectangle it covers.
      */
     override fun renderRegion(
         pageIndex: Int,
@@ -179,43 +196,42 @@ class MuPdfDocumentHandle(
         bottomNorm: Float,
         zoomedFullPageWidthPx: Int,
         invertColors: Boolean
-    ): Bitmap = synchronized(lock) {
+    ): PdfRegionTile = synchronized(lock) {
         check(!closed) { "Document is closed" }
         val page = document.loadPage(pageIndex)
         try {
             val bounds = page.bounds
             val pageW = max(1f, bounds.x1 - bounds.x0)
             val pageH = max(1f, bounds.y1 - bounds.y0)
-            val l = leftNorm.coerceIn(0f, 0.99f)
-            val t = topNorm.coerceIn(0f, 0.99f)
-            val r = rightNorm.coerceIn(l + 0.01f, 1f)
-            val b = bottomNorm.coerceIn(t + 0.01f, 1f)
-            val spanW = (r - l).coerceAtLeast(0.01f)
-            val spanH = (b - t).coerceAtLeast(0.01f)
 
-            // Uniformly cap full-page scale so the ENTIRE requested region (l,t,r,b) fits inside
-            // the safe bitmap budget (max 2400x3000) without ever cropping or distorting the page!
-            var scale = zoomedFullPageWidthPx.coerceIn(720, 7600).toFloat() / pageW
-            val reqTileW = spanW * pageW * scale
-            val reqTileH = spanH * pageH * scale
-            val maxTileW = 2400f
-            val maxTileH = 3000f
-            if (reqTileW > maxTileW || reqTileH > maxTileH) {
-                val downFactor = minOf(maxTileW / reqTileW, maxTileH / reqTileH)
-                scale *= downFactor
-            }
+            val l = leftNorm.coerceIn(0f, 0.995f)
+            val t = topNorm.coerceIn(0f, 0.995f)
+            val r = rightNorm.coerceIn(l + 0.005f, 1f)
+            val b = bottomNorm.coerceIn(t + 0.005f, 1f)
 
-            val fullW = (pageW * scale).toInt().coerceAtLeast(1)
-            val fullH = (pageH * scale).toInt().coerceAtLeast(1)
-            val patchX = (l * fullW).toInt()
-            val patchY = (t * fullH).toInt()
-            val tileW = (spanW * fullW).toInt().coerceIn(64, 2400)
-            val tileH = (spanH * fullH).toInt().coerceIn(64, 3000)
+            var scale = zoomedFullPageWidthPx.coerceIn(480, 9000).toFloat() / pageW
+            val wantW = (r - l) * pageW * scale
+            val wantH = (b - t) * pageH * scale
+            val shrink = min(1f, min(MAX_TILE_SIDE / wantW, MAX_TILE_SIDE / wantH))
+            scale *= shrink
+
+            val fullW = pageW * scale
+            val fullH = pageH * scale
+            val patchX = floor(l * fullW).toInt()
+            val patchY = floor(t * fullH).toInt()
+            val endX = ceil(r * fullW).toInt()
+            val endY = ceil(b * fullH).toInt()
+            val tileW = (endX - patchX).coerceAtLeast(1)
+            val tileH = (endY - patchY).coerceAtLeast(1)
 
             val tileBmp = Bitmap.createBitmap(tileW, tileH, Bitmap.Config.ARGB_8888)
             tileBmp.eraseColor(android.graphics.Color.WHITE)
 
+            // Map page space -> device space, honouring non-zero page origins (cropped media boxes).
             val ctm = Matrix(scale, scale)
+            ctm.e = -bounds.x0 * scale
+            ctm.f = -bounds.y0 * scale
+
             val dev = AndroidDrawDevice(tileBmp, patchX, patchY)
             try {
                 page.run(dev, ctm, null)
@@ -223,10 +239,61 @@ class MuPdfDocumentHandle(
             } finally {
                 dev.destroy()
             }
-            if (invertColors) applyNightInversion(tileBmp) else tileBmp
+
+            val finalBmp = if (invertColors) applyNightInversion(tileBmp) else tileBmp
+            PdfRegionTile(
+                bitmap = finalBmp,
+                leftNorm = (patchX / fullW).coerceIn(0f, 1f),
+                topNorm = (patchY / fullH).coerceIn(0f, 1f),
+                rightNorm = ((patchX + tileW) / fullW).coerceIn(0f, 1f),
+                bottomNorm = ((patchY + tileH) / fullH).coerceIn(0f, 1f)
+            )
         } finally {
             page.destroy()
         }
+    }
+
+    override fun getPageLinks(pageIndex: Int): List<PdfLink> = synchronized(lock) {
+        if (closed) return emptyList()
+        val page = document.loadPage(pageIndex)
+        try {
+            val bounds = page.bounds
+            val pageW = max(1f, bounds.x1 - bounds.x0)
+            val pageH = max(1f, bounds.y1 - bounds.y0)
+            val links = page.links ?: return emptyList()
+            links.mapNotNull { link ->
+                val b = link.bounds ?: return@mapNotNull null
+                val uri: String? = link.uri
+                val external = !uri.isNullOrBlank() && isExternalUri(uri)
+                val target: Int? = if (external) {
+                    null
+                } else {
+                    runCatching { document.pageNumberFromLocation(document.resolveLink(link)) }
+                        .getOrNull()
+                        ?.takeIf { it >= 0 }
+                }
+                if (!external && target == null) return@mapNotNull null
+                PdfLink(
+                    box = PdfGeometryHelper.normalizeBox(
+                        minX = b.x0, minY = b.y0, maxX = b.x1, maxY = b.y1,
+                        pageLeft = bounds.x0, pageTop = bounds.y0,
+                        pageWidth = pageW, pageHeight = pageH
+                    ),
+                    targetPage = target,
+                    uri = if (external) uri else null
+                )
+            }
+        } catch (_: Throwable) {
+            emptyList()
+        } finally {
+            page.destroy()
+        }
+    }
+
+    private fun isExternalUri(uri: String): Boolean {
+        val lower = uri.trim().lowercase()
+        return lower.startsWith("http://") || lower.startsWith("https://") ||
+            lower.startsWith("mailto:") || lower.startsWith("tel:")
     }
 
     override fun renderThumbnail(pageIndex: Int, targetWidthPx: Int): Bitmap {
@@ -363,11 +430,8 @@ class MuPdfDocumentHandle(
                 )
             )
         }
-        try {
-            canvas.drawBitmap(source, 0f, 0f, paint)
-        } finally {
-            if (inverted !== source && !source.isRecycled) source.recycle()
-        }
+        canvas.drawBitmap(source, 0f, 0f, paint)
+        source.recycle()
         return inverted
     }
 

@@ -14,8 +14,8 @@ android {
         applicationId = "com.offlinepdf.studio"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "5.0.0-pdf-editor"
+        versionCode = 10
+        versionName = "1.5.0-phase3.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         resourceConfigurations += listOf("en", "hi")
@@ -28,18 +28,13 @@ android {
     }
 
     signingConfigs {
-        create("personal") {
-            val envPath = System.getenv("RELEASE_KEYSTORE_PATH")
-            if (!envPath.isNullOrBlank()) {
-                storeFile = file(envPath)
+        create("release") {
+            val storePath = System.getenv("RELEASE_KEYSTORE_PATH")
+            if (!storePath.isNullOrBlank()) {
+                storeFile = file(storePath)
                 storePassword = System.getenv("RELEASE_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("RELEASE_KEY_ALIAS")
                 keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
-            } else {
-                storeFile = file("personal-signing.keystore")
-                storePassword = "offlinepdf2026"
-                keyAlias = "offlinepdf"
-                keyPassword = "offlinepdf2026"
             }
         }
     }
@@ -48,7 +43,6 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("personal")
         }
         release {
             isMinifyEnabled = true
@@ -57,7 +51,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("personal")
+            if (!System.getenv("RELEASE_KEYSTORE_PATH").isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -86,7 +82,6 @@ dependencies {
     implementation(project(":core:storage"))
     implementation(project(":core:pdf"))
     implementation(project(":core:image-processing"))
-    implementation(project(":core:ocr"))
 
     implementation(project(":feature:home"))
     implementation(project(":feature:files"))
@@ -97,6 +92,7 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
+    implementation(libs.androidx.core.splashscreen)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.activity.compose)

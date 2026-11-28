@@ -23,13 +23,6 @@ data class DocumentQuad(
 ) {
     fun asList(): List<NormalizedPoint> = listOf(topLeft, topRight, bottomRight, bottomLeft)
 
-    fun edgeMidpoints(): List<NormalizedPoint> = listOf(
-        NormalizedPoint((topLeft.x + topRight.x) / 2f, (topLeft.y + topRight.y) / 2f),       // Top
-        NormalizedPoint((topRight.x + bottomRight.x) / 2f, (topRight.y + bottomRight.y) / 2f), // Right
-        NormalizedPoint((bottomRight.x + bottomLeft.x) / 2f, (bottomRight.y + bottomLeft.y) / 2f), // Bottom
-        NormalizedPoint((bottomLeft.x + topLeft.x) / 2f, (bottomLeft.y + topLeft.y) / 2f)     // Left
-    )
-
     fun lerp(target: DocumentQuad, alpha: Float): DocumentQuad = DocumentQuad(
         topLeft = topLeft.lerp(target.topLeft, alpha),
         topRight = topRight.lerp(target.topRight, alpha),
@@ -39,11 +32,6 @@ data class DocumentQuad(
 
     fun rotated90Clockwise(): DocumentQuad {
         fun rot(p: NormalizedPoint) = NormalizedPoint(1f - p.y, p.x).clamped()
-        return DocumentQuad.fromUnordered(asList().map(::rot))
-    }
-
-    fun rotated90CounterClockwise(): DocumentQuad {
-        fun rot(p: NormalizedPoint) = NormalizedPoint(p.y, 1f - p.x).clamped()
         return DocumentQuad.fromUnordered(asList().map(::rot))
     }
 
@@ -95,34 +83,30 @@ enum class ScanQualityMode(
     HD("HD", 2800, 96)
 }
 
-/**
- * Exact 10 distinct professional filters required for Adobe Scan-level scanning.
- */
 enum class ScanFilterMode(val displayName: String) {
-    ORIGINAL("Original"),
+    ORIGINAL_COLOR("Original"),
     AUTO_COLOR("Auto Color"),
-    COLOR("Color"),
-    DOCUMENT("Document"),
+    DOCUMENT_COLOR("Doc Color"),
+    ENHANCED_COLOR("Enhanced"),
     BLACK_AND_WHITE("B&W"),
     GRAYSCALE("Grayscale"),
     HIGH_CONTRAST("High Contrast"),
-    ENHANCED_DOCUMENT("Enhanced Doc"),
-    PHOTO("Photo"),
-    SOFT_COLOR("Soft Color")
+    PHOTO_MODE("Photo"),
+    CLEAN_DOCUMENT("Clean Doc"),
+    CUSTOM("Custom")
 }
 
 data class CustomAdjustments(
-    val brightness: Float = 0f,      // -60..+60
-    val contrast: Float = 1.0f,      // 0.6..1.8
-    val sharpness: Float = 0.0f,     // 0.0..1.5
-    val filterStrength: Float = 1.0f // 0.0..1.0 blend with original
+    val brightness: Float = 0f,
+    val contrast: Float = 1.0f,
+    val saturation: Float = 1.0f,
+    val sharpness: Float = 0.0f
 )
 
 enum class ExportFormat(val displayName: String, val mimeType: String, val extension: String) {
-    PDF("PDF", "application/pdf", "pdf"),
-    SEARCHABLE_PDF("Searchable PDF", "application/pdf", "pdf"),
-    JPEG("JPEG", "image/jpeg", "jpg"),
-    PNG("PNG", "image/png", "png")
+    PDF("PDF Document", "application/pdf", "pdf"),
+    JPEG("JPEG Image", "image/jpeg", "jpg"),
+    PNG("PNG Image", "image/png", "png")
 }
 
 enum class ExportPageSize(val displayName: String, val widthPt: Int, val heightPt: Int) {

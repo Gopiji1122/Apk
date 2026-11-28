@@ -4,69 +4,110 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.Card
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AutoStories
+import androidx.compose.material.icons.outlined.DocumentScanner
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import com.offlinepdf.studio.core.designsystem.components.PhaseBadge
+import com.offlinepdf.studio.core.designsystem.R
+import com.offlinepdf.studio.core.designsystem.components.GradientActionCard
+import com.offlinepdf.studio.core.designsystem.components.PillTone
+import com.offlinepdf.studio.core.designsystem.components.ScreenHeader
+import com.offlinepdf.studio.core.designsystem.components.SectionTitle
+import com.offlinepdf.studio.core.designsystem.components.StatusPill
+import com.offlinepdf.studio.core.designsystem.components.StudioCard
+import com.offlinepdf.studio.core.designsystem.components.staggeredEntrance
+import com.offlinepdf.studio.core.designsystem.theme.extras
 
-private data class ToolRoadmapItem(
-    val title: String,
-    val description: String,
-    val phase: String,
-    val live: Boolean
-)
+private data class UpcomingTool(val titleRes: Int, val descRes: Int)
 
-private val TOOL_ITEMS = listOf(
-    ToolRoadmapItem("Professional MuPDF Reader", "Vertical, horizontal & two-page modes, zoom presets, thumbnails, TOC, bookmarks, search highlights, text copy & immersive mode.", "Phase 2 — Live", true),
-    ToolRoadmapItem("Document Scanner", "CameraX + OpenCV auto edge detection, 4-corner perspective crop, 10 filters, unlimited pages & PDF/JPEG/PNG export.", "Phase 3 — Live", true),
-    ToolRoadmapItem("Offline OCR (EN + HI)", "Tesseract4Android Devanagari + English text extraction, TXT export & Searchable PDF.", "Live", true),
-    ToolRoadmapItem("PDF Annotations & Fill & Sign", "Highlight, underline, strikethrough, freehand draw, sticky notes, text boxes, shapes, checkmarks & reusable signature via MuPDF.", "Phase 5 — Live", true),
-    ToolRoadmapItem("PDF Content Editor", "Add/edit supported text, images, links, and layout overlays.", "Phase 6", false),
-    ToolRoadmapItem("Page Organizer", "Merge, split, extract, reorder, rotate, delete, and insert pages.", "Phase 7", false),
-    ToolRoadmapItem("Forms, Signatures & Security", "Fill forms, reusable signatures, compression, watermarks, passwords & true redaction.", "Phase 8", false)
+private val UPCOMING = listOf(
+    UpcomingTool(R.string.tool_ocr, R.string.tool_ocr_desc),
+    UpcomingTool(R.string.tool_annotate, R.string.tool_annotate_desc),
+    UpcomingTool(R.string.tool_editor, R.string.tool_editor_desc),
+    UpcomingTool(R.string.tool_organizer, R.string.tool_organizer_desc),
+    UpcomingTool(R.string.tool_security, R.string.tool_security_desc)
 )
 
 @Composable
-fun ToolsScreen() {
+fun ToolsScreen(
+    onOpenReader: () -> Unit = {},
+    onOpenScanner: () -> Unit = {}
+) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        contentPadding = PaddingValues(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        item { ScreenHeader(title = stringResource(R.string.tools_title), subtitle = stringResource(R.string.tools_subtitle)) }
+
         item {
-            Text("PDF Toolkit", style = MaterialTheme.typography.headlineMedium)
-            Text(
-                "Only implemented tools are active; upcoming phases are clearly labeled.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .staggeredEntrance(0),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                GradientActionCard(
+                    title = stringResource(R.string.tool_reader),
+                    subtitle = stringResource(R.string.tool_reader_sub),
+                    icon = Icons.Outlined.AutoStories,
+                    brush = MaterialTheme.extras.brandBrush,
+                    onClick = onOpenReader,
+                    modifier = Modifier.weight(1f)
+                )
+                GradientActionCard(
+                    title = stringResource(R.string.tool_scanner),
+                    subtitle = stringResource(R.string.tool_scanner_sub),
+                    icon = Icons.Outlined.DocumentScanner,
+                    brush = MaterialTheme.extras.scanBrush,
+                    onClick = onOpenScanner,
+                    modifier = Modifier.weight(1f)
+                )
+            }
         }
-        items(TOOL_ITEMS) { item ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
+
+        item { SectionTitle(stringResource(R.string.tools_coming_soon), Modifier.staggeredEntrance(1)) }
+
+        items(UPCOMING.size) { index ->
+            val tool = UPCOMING[index]
+            StudioCard(
+                modifier = Modifier
+                    .padding(horizontal = 20.dp)
+                    .staggeredEntrance(index + 2),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(item.title, style = MaterialTheme.typography.titleMedium)
-                        PhaseBadge(label = item.phase, active = item.live)
+                        Text(
+                            stringResource(tool.titleRes),
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.weight(1f)
+                        )
+                        StatusPill(stringResource(R.string.pill_soon), tone = PillTone.NEUTRAL)
                     }
                     Text(
-                        item.description,
-                        style = MaterialTheme.typography.bodyMedium,
+                        stringResource(tool.descRes),
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
