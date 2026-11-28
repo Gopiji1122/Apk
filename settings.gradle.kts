@@ -8,6 +8,7 @@ pluginManagement {
             }
         }
         mavenCentral()
+        maven { url = uri("https://jitpack.io") }
         gradlePluginPortal()
     }
 }
@@ -17,6 +18,7 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven { url = uri("https://jitpack.io") }
         // Official Artifex Ghostscript Maven repository for MuPDF JNI artifact (com.artifex.mupdf:fitz)
         maven {
             url = uri("http://maven.ghostscript.com")
@@ -34,6 +36,7 @@ include(":core:database")
 include(":core:storage")
 include(":core:pdf")
 include(":core:image-processing")
+include(":core:ocr")
 include(":feature:home")
 include(":feature:files")
 include(":feature:reader")

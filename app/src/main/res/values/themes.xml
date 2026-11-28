@@ -1,14 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.OfflinePdfStudio" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="android:windowBackground">@color/studio_window_bg</item>
-    </style>
-
-    <!-- Animated system splash; hands over to Theme.OfflinePdfStudio. -->
-    <style name="Theme.OfflinePdfStudio.Starting" parent="Theme.SplashScreen">
-        <item name="windowSplashScreenBackground">@color/studio_window_bg</item>
-        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
-        <item name="windowSplashScreenIconBackgroundColor">@color/studio_splash_icon_bg</item>
-        <item name="postSplashScreenTheme">@style/Theme.OfflinePdfStudio</item>
-    </style>
+    <style name="Theme.OfflinePdfStudio" parent="Theme.AppCompat.DayNight.NoActionBar" />
 </resources>

@@ -10,7 +10,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.offlinepdf.studio.core.database.UserPreferences
 import com.offlinepdf.studio.core.database.UserPreferencesRepository
@@ -29,7 +28,6 @@ class MainActivity : AppCompatActivity() {
     private var externalPdfUri by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -44,11 +42,7 @@ class MainActivity : AppCompatActivity() {
                 "DARK" -> ThemeMode.DARK
                 else -> ThemeMode.SYSTEM
             }
-            OfflinePdfStudioTheme(
-                themeMode = themeMode,
-                animationsEnabled = prefs.animationsEnabled,
-                hapticsEnabled = prefs.hapticFeedback
-            ) {
+            OfflinePdfStudioTheme(themeMode = themeMode) {
                 key(externalPdfUri) {
                     StudioNavHost(
                         initialDocumentUri = externalPdfUri,
@@ -62,9 +56,15 @@ class MainActivity : AppCompatActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        extractPdfUri(intent)?.toString()?.let { externalPdfUri = it }
+        extractPdfUri(intent)?.toString()?.let { uriStr ->
+            externalPdfUri = uriStr
+        }
     }
 
-    private fun extractPdfUri(intent: Intent?): Uri? =
-        if (intent?.action == Intent.ACTION_VIEW) intent.data else null
+    private fun extractPdfUri(intent: Intent?): Uri? {
+        if (intent?.action == Intent.ACTION_VIEW) {
+            return intent.data
+        }
+        return null
+    }
 }

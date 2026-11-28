@@ -1,81 +1,64 @@
 package com.offlinepdf.studio.feature.files
 
 import android.content.Intent
-import android.widget.Toast
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ViewList
 import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.DriveFileRenameOutline
-import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.PictureAsPdf
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.Sort
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material.icons.outlined.ViewList
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.offlinepdf.studio.core.common.Formatters
 import com.offlinepdf.studio.core.database.DocumentEntity
-import com.offlinepdf.studio.core.designsystem.R
-import com.offlinepdf.studio.core.designsystem.components.DocumentThumb
-import com.offlinepdf.studio.core.designsystem.components.EmptyState
-import com.offlinepdf.studio.core.designsystem.components.ScreenHeader
-import com.offlinepdf.studio.core.designsystem.components.StatusPill
-import com.offlinepdf.studio.core.designsystem.components.PillTone
-import com.offlinepdf.studio.core.designsystem.components.StudioCard
-import com.offlinepdf.studio.core.designsystem.components.staggeredEntrance
-import com.offlinepdf.studio.core.designsystem.theme.extras
-import kotlinx.coroutines.launch
 
 @Composable
 fun FilesScreen(
@@ -84,354 +67,237 @@ fun FilesScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var renameTarget by remember { mutableStateOf<DocumentEntity?>(null) }
-    var removeTarget by remember { mutableStateOf<DocumentEntity?>(null) }
     var renameInput by remember { mutableStateOf("") }
-    var sortMenu by remember { mutableStateOf(false) }
 
     val multiPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris -> if (uris.isNotEmpty()) viewModel.importDocuments(uris) }
-
-    val loadThumb: suspend (String) -> android.graphics.Bitmap? = { viewModel.thumbnail(it) }
-
-    fun share(doc: DocumentEntity) {
-        scope.launch {
-            runCatching {
-                val uri = viewModel.shareUri(doc)
-                val intent = Intent(Intent.ACTION_SEND).apply {
-                    type = "application/pdf"
-                    putExtra(Intent.EXTRA_STREAM, uri)
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                context.startActivity(Intent.createChooser(intent, null))
-            }.onFailure {
-                Toast.makeText(context, R.string.toast_share_failed, Toast.LENGTH_SHORT).show()
-            }
-        }
+    ) { uris ->
+        if (uris.isNotEmpty()) viewModel.importDocuments(uris)
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            ScreenHeader(
-                title = stringResource(R.string.files_title),
-                subtitle = stringResource(R.string.files_count, state.documents.size),
-                trailing = {
-                    Box {
-                        IconButton(onClick = { sortMenu = true }) {
-                            Icon(Icons.Outlined.Sort, contentDescription = stringResource(R.string.cd_sort))
-                        }
-                        DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
-                            listOf(
-                                FileSortOrder.DATE_DESC to R.string.sort_recent,
-                                FileSortOrder.NAME_ASC to R.string.sort_name,
-                                FileSortOrder.SIZE_DESC to R.string.sort_size
-                            ).forEach { (order, label) ->
-                                DropdownMenuItem(
-                                    text = {
-                                        Text(
-                                            stringResource(label),
-                                            color = if (state.sortOrder == order) MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.onSurface
-                                        )
-                                    },
-                                    onClick = { sortMenu = false; viewModel.updateSort(order) }
-                                )
-                            }
-                        }
-                    }
-                    IconButton(onClick = viewModel::toggleGridView) {
-                        Icon(
-                            imageVector = if (state.isGridView) Icons.AutoMirrored.Outlined.ViewList else Icons.Outlined.GridView,
-                            contentDescription = stringResource(R.string.cd_toggle_layout)
-                        )
-                    }
+    Scaffold(
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = { multiPicker.launch(arrayOf("application/pdf")) }
+            ) {
+                Icon(Icons.Outlined.Add, contentDescription = "Import PDF")
+            }
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Files", style = MaterialTheme.typography.headlineMedium)
+                IconButton(onClick = viewModel::toggleGridView) {
+                    Icon(
+                        imageVector = if (state.isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
+                        contentDescription = "Toggle layout"
+                    )
                 }
-            )
+            }
 
+            Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = state.query,
                 onValueChange = viewModel::updateQuery,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp),
+                modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                shape = RoundedCornerShape(16.dp),
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    focusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent,
-                    unfocusedIndicatorColor = androidx.compose.ui.graphics.Color.Transparent
-                ),
                 leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (state.query.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.updateQuery("") }) {
-                            Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.cd_clear))
-                        }
-                    }
-                },
-                placeholder = { Text(stringResource(R.string.files_search_hint)) }
+                placeholder = { Text("Search PDFs by filename...") }
             )
 
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                items(
-                    listOf(
-                        FileFilter.ALL to R.string.filter_all,
-                        FileFilter.FAVORITES to R.string.filter_favorites,
-                        FileFilter.SCANNED to R.string.filter_scanned
-                    )
-                ) { (filter, label) ->
-                    FilterChip(
-                        selected = state.filter == filter,
-                        onClick = { viewModel.updateFilter(filter) },
-                        label = { Text(stringResource(label)) },
-                        shape = RoundedCornerShape(50)
-                    )
-                }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(
+                    selected = state.sortOrder == FileSortOrder.DATE_DESC,
+                    onClick = { viewModel.updateSort(FileSortOrder.DATE_DESC) },
+                    label = { Text("Recent") }
+                )
+                FilterChip(
+                    selected = state.sortOrder == FileSortOrder.NAME_ASC,
+                    onClick = { viewModel.updateSort(FileSortOrder.NAME_ASC) },
+                    label = { Text("Name") }
+                )
+                FilterChip(
+                    selected = state.sortOrder == FileSortOrder.SIZE_DESC,
+                    onClick = { viewModel.updateSort(FileSortOrder.SIZE_DESC) },
+                    label = { Text("Size") }
+                )
+                FilterChip(
+                    selected = state.favoritesOnly,
+                    onClick = viewModel::toggleFavoritesOnly,
+                    label = { Text("Favorites") }
+                )
             }
 
-            when {
-                state.documents.isEmpty() -> {
-                    EmptyState(
-                        icon = Icons.Outlined.FolderOpen,
-                        title = stringResource(R.string.files_empty_title),
-                        message = stringResource(R.string.files_empty_body),
-                        modifier = Modifier.padding(top = 36.dp)
+            Spacer(Modifier.height(12.dp))
+            if (state.documents.isEmpty()) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text("No matching PDF files", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "Tap + to add PDFs using Android Storage Access Framework.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                state.isGridView -> {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 150.dp),
-                        verticalArrangement = Arrangement.spacedBy(14.dp),
-                        horizontalArrangement = Arrangement.spacedBy(14.dp),
-                        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 110.dp)
-                    ) {
-                        items(state.documents, key = { it.uriString }) { doc ->
-                            FileGridCard(
-                                doc = doc,
-                                loadThumb = loadThumb,
-                                onClick = { onOpenDocument(doc.uriString) },
-                                onFavorite = { viewModel.toggleFavorite(doc) },
-                                onRename = { renameTarget = doc; renameInput = doc.displayName },
-                                onShare = { share(doc) },
-                                onRemove = { removeTarget = doc }
-                            )
-                        }
+            } else if (state.isGridView) {
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 156.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    contentPadding = PaddingValues(bottom = 80.dp)
+                ) {
+                    items(state.documents, key = { it.uriString }) { doc ->
+                        FileCard(
+                            doc = doc,
+                            onClick = { onOpenDocument(doc.uriString) },
+                            onFavorite = { viewModel.toggleFavorite(doc) },
+                            onRename = {
+                                renameTarget = doc
+                                renameInput = doc.displayName
+                            },
+                            onShare = { sharePdf(context, doc.uriString) },
+                            onRemove = { viewModel.removeFromLibrary(doc.uriString) }
+                        )
                     }
                 }
-                else -> {
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 110.dp)
-                    ) {
-                        items(state.documents, key = { it.uriString }) { doc ->
-                            FileListCard(
-                                doc = doc,
-                                loadThumb = loadThumb,
-                                onClick = { onOpenDocument(doc.uriString) },
-                                onFavorite = { viewModel.toggleFavorite(doc) },
-                                onRename = { renameTarget = doc; renameInput = doc.displayName },
-                                onShare = { share(doc) },
-                                onRemove = { removeTarget = doc }
-                            )
-                        }
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    contentPadding = PaddingValues(bottom = 80.dp)
+                ) {
+                    items(state.documents, key = { it.uriString }) { doc ->
+                        FileCard(
+                            doc = doc,
+                            onClick = { onOpenDocument(doc.uriString) },
+                            onFavorite = { viewModel.toggleFavorite(doc) },
+                            onRename = {
+                                renameTarget = doc
+                                renameInput = doc.displayName
+                            },
+                            onShare = { sharePdf(context, doc.uriString) },
+                            onRemove = { viewModel.removeFromLibrary(doc.uriString) }
+                        )
                     }
                 }
             }
         }
-
-        ExtendedFloatingActionButton(
-            onClick = { multiPicker.launch(arrayOf("application/pdf")) },
-            icon = { Icon(Icons.Outlined.Add, contentDescription = null) },
-            text = { Text(stringResource(R.string.files_import)) },
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
-            shape = RoundedCornerShape(18.dp),
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(20.dp)
-        )
     }
 
     renameTarget?.let { target ->
         AlertDialog(
             onDismissRequest = { renameTarget = null },
-            title = { Text(stringResource(R.string.rename_title)) },
+            title = { Text("Rename Document") },
             text = {
                 OutlinedTextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
                     singleLine = true,
-                    label = { Text(stringResource(R.string.rename_label)) }
+                    label = { Text("Filename") }
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.rename(target.uriString, renameInput)
                     renameTarget = null
-                }) { Text(stringResource(R.string.action_save)) }
+                }) { Text("Save") }
             },
             dismissButton = {
-                TextButton(onClick = { renameTarget = null }) { Text(stringResource(R.string.action_cancel)) }
-            }
-        )
-    }
-
-    removeTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { removeTarget = null },
-            title = { Text(stringResource(R.string.remove_title)) },
-            text = { Text(stringResource(R.string.remove_body, target.displayName)) },
-            confirmButton = {
-                TextButton(onClick = {
-                    viewModel.removeFromLibrary(target.uriString)
-                    removeTarget = null
-                }) { Text(stringResource(R.string.action_remove), color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = {
-                TextButton(onClick = { removeTarget = null }) { Text(stringResource(R.string.action_cancel)) }
+                TextButton(onClick = { renameTarget = null }) { Text("Cancel") }
             }
         )
     }
 }
 
 @Composable
-private fun DocMenu(
+private fun FileCard(
     doc: DocumentEntity,
-    onRename: () -> Unit,
-    onShare: () -> Unit,
-    onRemove: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { expanded = true }, modifier = Modifier.size(36.dp)) {
-            Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.cd_more))
-        }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.menu_rename)) },
-                leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, null) },
-                onClick = { expanded = false; onRename() }
-            )
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.menu_share)) },
-                leadingIcon = { Icon(Icons.Outlined.Share, null) },
-                onClick = { expanded = false; onShare() }
-            )
-            DropdownMenuItem(
-                text = { Text(stringResource(R.string.menu_remove_from_list)) },
-                leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null) },
-                onClick = { expanded = false; onRemove() }
-            )
-        }
-    }
-}
-
-@Composable
-private fun FavoriteButton(doc: DocumentEntity, onFavorite: () -> Unit) {
-    IconButton(onClick = onFavorite, modifier = Modifier.size(36.dp)) {
-        Icon(
-            imageVector = if (doc.isFavorite) Icons.Outlined.Star else Icons.Outlined.StarBorder,
-            contentDescription = stringResource(R.string.cd_favorite),
-            tint = if (doc.isFavorite) androidx.compose.ui.graphics.Color(0xFFF5A524)
-            else MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-@Composable
-private fun FileListCard(
-    doc: DocumentEntity,
-    loadThumb: suspend (String) -> android.graphics.Bitmap?,
     onClick: () -> Unit,
     onFavorite: () -> Unit,
     onRename: () -> Unit,
     onShare: () -> Unit,
     onRemove: () -> Unit
 ) {
-    StudioCard(
-        modifier = Modifier.fillMaxWidth(),
-        onClick = onClick,
-        shape = MaterialTheme.shapes.medium
+    var menuExpanded by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            DocumentThumb(
-                key = doc.uriString,
-                scanned = doc.isScanned,
-                loader = loadThumb,
-                modifier = Modifier
-                    .width(48.dp)
-                    .height(64.dp),
-                shape = RoundedCornerShape(10.dp)
-            )
-            Spacer(Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    doc.displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    "${Formatters.formatFileSize(doc.sizeBytes)} • " +
-                        if (doc.pageCount > 0) "${doc.pageCount} p" else "PDF",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (doc.isScanned) StatusPill(stringResource(R.string.pill_scanned), tone = PillTone.SCAN)
-            }
-            FavoriteButton(doc, onFavorite)
-            DocMenu(doc, onRename, onShare, onRemove)
-        }
-    }
-}
-
-@Composable
-private fun FileGridCard(
-    doc: DocumentEntity,
-    loadThumb: suspend (String) -> android.graphics.Bitmap?,
-    onClick: () -> Unit,
-    onFavorite: () -> Unit,
-    onRename: () -> Unit,
-    onShare: () -> Unit,
-    onRemove: () -> Unit
-) {
-    StudioCard(modifier = Modifier.fillMaxWidth(), onClick = onClick) {
-        DocumentThumb(
-            key = doc.uriString,
-            scanned = doc.isScanned,
-            loader = loadThumb,
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(0.78f),
-            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
-        )
-        Row(
-            modifier = Modifier.padding(start = 12.dp, end = 2.dp, top = 6.dp, bottom = 6.dp),
+                .padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            Icon(
+                imageVector = Icons.Outlined.PictureAsPdf,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.width(12.dp))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    doc.displayName,
-                    style = MaterialTheme.typography.labelLarge,
+                    text = doc.displayName,
+                    style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    Formatters.formatFileSize(doc.sizeBytes),
+                    text = "${Formatters.formatFileSize(doc.sizeBytes)} • ${if (doc.pageCount > 0) "${doc.pageCount}p" else "PDF"}",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            DocMenu(doc, onRename, onShare, onRemove)
+            IconButton(onClick = onFavorite) {
+                Icon(
+                    imageVector = if (doc.isFavorite) Icons.Outlined.Star else Icons.Outlined.StarBorder,
+                    contentDescription = "Favorite"
+                )
+            }
+            IconButton(onClick = { menuExpanded = true }) {
+                Icon(Icons.Outlined.MoreVert, contentDescription = "More options")
+                DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Rename") },
+                        leadingIcon = { Icon(Icons.Outlined.DriveFileRenameOutline, null) },
+                        onClick = { menuExpanded = false; onRename() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Share") },
+                        leadingIcon = { Icon(Icons.Outlined.Share, null) },
+                        onClick = { menuExpanded = false; onShare() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Remove from list") },
+                        leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null) },
+                        onClick = { menuExpanded = false; onRemove() }
+                    )
+                }
+            }
         }
     }
+}
+
+private fun sharePdf(context: android.content.Context, uriString: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "application/pdf"
+        putExtra(Intent.EXTRA_STREAM, Uri.parse(uriString))
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    context.startActivity(Intent.createChooser(intent, "Share PDF"))
 }

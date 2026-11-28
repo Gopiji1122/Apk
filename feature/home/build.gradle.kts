@@ -32,7 +32,6 @@ dependencies {
     implementation(project(":core:design-system"))
     implementation(project(":core:database"))
     implementation(project(":core:storage"))
-    implementation(project(":core:pdf"))
     
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.compose.ui)

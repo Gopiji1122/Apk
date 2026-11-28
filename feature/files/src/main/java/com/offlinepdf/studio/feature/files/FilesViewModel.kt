@@ -4,7 +4,6 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.offlinepdf.studio.core.database.DocumentEntity
-import com.offlinepdf.studio.core.pdf.DocumentThumbnailProvider
 import com.offlinepdf.studio.core.storage.SafDocumentRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,45 +16,33 @@ import javax.inject.Inject
 
 enum class FileSortOrder { DATE_DESC, NAME_ASC, SIZE_DESC }
 
-enum class FileFilter { ALL, FAVORITES, SCANNED }
-
 data class FilesUiState(
     val query: String = "",
     val sortOrder: FileSortOrder = FileSortOrder.DATE_DESC,
     val isGridView: Boolean = false,
-    val filter: FileFilter = FileFilter.ALL,
+    val favoritesOnly: Boolean = false,
     val documents: List<DocumentEntity> = emptyList()
 )
 
 @HiltViewModel
 class FilesViewModel @Inject constructor(
-    private val repository: SafDocumentRepository,
-    private val thumbnails: DocumentThumbnailProvider
+    private val repository: SafDocumentRepository
 ) : ViewModel() {
-
-    suspend fun thumbnail(uriString: String) = thumbnails.thumbnail(uriString)
-
-    suspend fun shareUri(doc: DocumentEntity): Uri =
-        repository.prepareShareUri(doc.uriString, doc.displayName)
 
     private val queryFlow = MutableStateFlow("")
     private val sortFlow = MutableStateFlow(FileSortOrder.DATE_DESC)
     private val gridFlow = MutableStateFlow(false)
-    private val filterFlow = MutableStateFlow(FileFilter.ALL)
+    private val favoritesOnlyFlow = MutableStateFlow(false)
 
     val uiState: StateFlow<FilesUiState> = combine(
         repository.observeAllDocuments(),
         queryFlow,
         sortFlow,
         gridFlow,
-        filterFlow
-    ) { docs, query, sort, isGrid, filter ->
+        favoritesOnlyFlow
+    ) { docs, query, sort, isGrid, favOnly ->
         val filtered = docs.filter { doc ->
-            val matchesFav = when (filter) {
-                FileFilter.ALL -> true
-                FileFilter.FAVORITES -> doc.isFavorite
-                FileFilter.SCANNED -> doc.isScanned
-            }
+            val matchesFav = !favOnly || doc.isFavorite
             val matchesQuery = query.isBlank() || doc.displayName.contains(query, ignoreCase = true)
             matchesFav && matchesQuery
         }
@@ -68,7 +55,7 @@ class FilesViewModel @Inject constructor(
             query = query,
             sortOrder = sort,
             isGridView = isGrid,
-            filter = filter,
+            favoritesOnly = favOnly,
             documents = sorted
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), FilesUiState())
@@ -76,7 +63,7 @@ class FilesViewModel @Inject constructor(
     fun updateQuery(value: String) { queryFlow.value = value }
     fun updateSort(order: FileSortOrder) { sortFlow.value = order }
     fun toggleGridView() { gridFlow.value = !gridFlow.value }
-    fun updateFilter(filter: FileFilter) { filterFlow.value = filter }
+    fun toggleFavoritesOnly() { favoritesOnlyFlow.value = !favoritesOnlyFlow.value }
 
     fun importDocuments(uris: List<Uri>) {
         viewModelScope.launch {

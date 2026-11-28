@@ -30,6 +30,7 @@ dependencies {
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.opencv)
+    implementation(libs.onnxruntime.android)
     implementation(libs.androidx.exifinterface)
 
     testImplementation(libs.junit)
